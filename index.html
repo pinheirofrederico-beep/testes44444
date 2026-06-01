@@ -1,0 +1,1601 @@
+"""
+╔══════════════════════════════════════════════════════════════╗
+║          MOOMOO RPG  –  Versão Python/Pygame                 ║
+║──────────────────────────────────────────────────────────────║
+║  Requisitos : Python 3.8+  |  pip install pygame             ║
+║  Executar   : python moomoo_rpg_full.py                      ║
+╠══════════════════════════════════════════════════════════════╣
+║  CONTROLES                                                   ║
+║  WASD / Setas ── mover                                       ║
+║  Mouse        ── mirar                                       ║
+║  Click Esq.   ── atacar                                      ║
+║  1 / 2 / 3    ── Espada / Machado / Magia                    ║
+║  F  ou  E     ── domesticar animal próximo                   ║
+║  R            ── renascer após morte                         ║
+║  ESC          ── pausar / sair                               ║
+╚══════════════════════════════════════════════════════════════╝
+"""
+
+import pygame
+import random
+import math
+import sys
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple
+from enum import Enum, auto
+
+# ══════════════════════════════════════════════════════════════
+#  CONFIGURAÇÕES GLOBAIS
+# ══════════════════════════════════════════════════════════════
+SW, SH        = 1100, 780          # resolução da janela
+FPS           = 60
+TITLE         = "MooMoo RPG"
+
+TILE          = 52                  # pixels por tile de chão
+WORLD_TILES   = 90                  # dimensão do mundo em tiles
+WORLD_PX      = WORLD_TILES * TILE  # dimensão em pixels
+
+MAX_TAMED     = 5                   # limite de animais domesticados
+MAX_PARTICLES = 500
+
+# ──── Paleta de cores ────
+C = {
+    "bg":          (34, 48, 34),
+    "white":       (255, 255, 255),
+    "black":       (0,   0,   0),
+    "gold":        (212, 175, 55),
+    "red":         (220,  40,  40),
+    "green":       (60,  200,  80),
+    "blue":        (50,  130, 230),
+    "purple":      (160,  60, 220),
+    "orange":      (230, 130,  40),
+    "gray":        (140, 140, 140),
+    "dark":        (18,   18,  24),
+    "panel":       (22,   28,  22),
+    "hud_bg":      (14,   20,  14),
+    "grass1":      (76,  128,  56),
+    "grass2":      (56,  105,  42),
+    "desert":      (195, 165,  95),
+    "forest":      (38,   96,  48),
+    "water":       (40,   80, 140),
+}
+
+# ══════════════════════════════════════════════════════════════
+#  UTILITÁRIOS
+# ══════════════════════════════════════════════════════════════
+def clamp(v, lo, hi):
+    return max(lo, min(hi, v))
+
+def dist2d(ax, ay, bx, by):
+    return math.sqrt((ax-bx)**2 + (ay-by)**2)
+
+def lerp(a, b, t):
+    return a + (b-a) * t
+
+def angle_to(ax, ay, bx, by):
+    return math.atan2(by-ay, bx-ax)
+
+def draw_text(surf, font, text, x, y, color=None, shadow=True, center=False):
+    color = color or C["white"]
+    r = font.render(text, True, color)
+    if center:
+        x -= r.get_width() // 2
+    if shadow:
+        s = font.render(text, True, C["black"])
+        surf.blit(s, (x+1, y+1))
+    surf.blit(r, (x, y))
+    return r.get_width()
+
+def draw_bar(surf, x, y, w, h, val, maxval, fg, bg=(30,30,30), border=(70,70,70)):
+    pygame.draw.rect(surf, bg,     (x, y, w, h))
+    fill = max(0, int(w * clamp(val/max(maxval,1), 0, 1)))
+    if fill > 0:
+        pygame.draw.rect(surf, fg, (x, y, fill, h))
+    pygame.draw.rect(surf, border, (x, y, w, h), 1)
+
+def noise2d(x, y):
+    """Pseudo-noise 2D para geração procedural do mapa."""
+    def h(a, b):
+        v = math.sin(a * 127.1 + b * 311.7) * 43758.5453
+        return v - math.floor(v)
+    X, Y = int(math.floor(x)), int(math.floor(y))
+    fx, fy = x - X, y - Y
+    s = lambda t: t*t*(3-2*t)
+    return lerp(lerp(h(X,Y), h(X+1,Y), s(fx)),
+                lerp(h(X,Y+1), h(X+1,Y+1), s(fx)), s(fy))
+
+
+# ══════════════════════════════════════════════════════════════
+#  CACHE DE TILES (evita recriação por frame)
+# ══════════════════════════════════════════════════════════════
+_tile_cache: dict = {}
+
+class BiomeType(Enum):
+    GRASS  = auto()
+    FOREST = auto()
+    DESERT = auto()
+    WATER  = auto()
+
+def get_biome(tx: int, ty: int) -> BiomeType:
+    n = noise2d(tx * 0.035, ty * 0.035)
+    if n > 0.62:  return BiomeType.FOREST
+    if n < 0.22:  return BiomeType.WATER
+    if n < 0.35:  return BiomeType.DESERT
+    return BiomeType.GRASS
+
+def make_tile(tx: int, ty: int) -> pygame.Surface:
+    key = (tx, ty)
+    if key in _tile_cache:
+        return _tile_cache[key]
+
+    surf = pygame.Surface((TILE, TILE))
+    biome = get_biome(tx, ty)
+
+    # cor base por bioma
+    bases = {
+        BiomeType.GRASS:  ((76, 128, 56), (56, 105, 42)),
+        BiomeType.FOREST: ((38,  96, 48), (25,  72, 35)),
+        BiomeType.DESERT: ((195,165, 95), (165,135, 65)),
+        BiomeType.WATER:  ((40,  80,140), (30,  60,120)),
+    }
+    base, dark = bases[biome]
+    surf.fill(base)
+
+    rng = random.Random(tx * 73856093 ^ ty * 19349663)
+    for _ in range(10):
+        px = rng.randint(0, TILE-3)
+        py = rng.randint(0, TILE-3)
+        col = tuple(clamp(base[i] + rng.randint(-14, 14), 0, 255) for i in range(3))
+        surf.set_at((px, py), col)
+    for _ in range(rng.randint(1, 3)):
+        w = rng.randint(3, 10); h2 = rng.randint(2, 6)
+        bx = rng.randint(0, TILE-w); by = rng.randint(0, TILE-h2)
+        pygame.draw.rect(surf, dark, (bx, by, w, h2))
+
+    # limpa cache se muito grande
+    if len(_tile_cache) > 2000:
+        for _ in range(200):
+            _tile_cache.pop(next(iter(_tile_cache)), None)
+    _tile_cache[key] = surf
+    return surf
+
+
+# ══════════════════════════════════════════════════════════════
+#  PARTÍCULA
+# ══════════════════════════════════════════════════════════════
+class Particle:
+    """Efeito visual de partícula com física simples."""
+    __slots__ = ("x","y","vx","vy","life","maxl","r","col","gravity")
+
+    def __init__(self, x, y, col, speed=3.0, life=35, r=3, gravity=0.06):
+        a = random.uniform(0, math.tau)
+        s = random.uniform(0.5, speed)
+        self.x = x;   self.y = y
+        self.vx = math.cos(a)*s;  self.vy = math.sin(a)*s
+        self.life = life;  self.maxl = life
+        self.r = r;   self.col = col;  self.gravity = gravity
+
+    def update(self):
+        self.x  += self.vx
+        self.y  += self.vy
+        self.vy += self.gravity
+        self.vx *= 0.97
+        self.life -= 1
+
+    def draw(self, surf: pygame.Surface, cam_x: float, cam_y: float):
+        if self.life <= 0:
+            return
+        alpha = max(0, int(255 * (self.life / self.maxl)))
+        r = max(1, self.r)
+        s = pygame.Surface((r*2, r*2), pygame.SRCALPHA)
+        pygame.draw.circle(s, (*self.col, alpha), (r, r), r)
+        surf.blit(s, (int(self.x - cam_x - r), int(self.y - cam_y - r)))
+
+
+# ══════════════════════════════════════════════════════════════
+#  NÚMERO DE DANO FLUTUANTE
+# ══════════════════════════════════════════════════════════════
+class DamageNumber:
+    """Número que flutua para cima ao causar dano."""
+    def __init__(self, x, y, text, col=(255, 80, 80)):
+        self.x = x; self.y = y
+        self.text = text; self.col = col
+        self.vy = -2.2; self.life = 55
+
+    def update(self):
+        self.y  += self.vy
+        self.vy *= 0.93
+        self.life -= 1
+
+    def draw(self, surf, font, cam_x, cam_y):
+        if self.life <= 0:
+            return
+        alpha = clamp(int(255 * self.life / 55), 0, 255)
+        r = font.render(self.text, True, self.col)
+        r.set_alpha(alpha)
+        sx = int(self.x - cam_x) - r.get_width()//2
+        sy = int(self.y - cam_y)
+        surf.blit(r, (sx, sy))
+
+
+# ══════════════════════════════════════════════════════════════
+#  ARMAS
+# ══════════════════════════════════════════════════════════════
+@dataclass
+class WeaponConfig:
+    name:        str
+    key:         int          # 1, 2, 3 …
+    dmg_min:     int
+    dmg_max:     int
+    range_px:    int          # alcance em pixels
+    arc_rad:     float        # arco de acerto em radianos
+    cooldown:    int          # frames entre ataques
+    color:       Tuple        = field(default=(192,192,192))
+    part_col:    Tuple        = field(default=(200,200,200))
+    special:     bool         = field(default=False)
+    proj_speed:  int          = field(default=0)  # 0 = melee
+
+WEAPONS = {
+    "sword": WeaponConfig(
+        name="Espada",    key=1,
+        dmg_min=6,  dmg_max=14, range_px=65,  arc_rad=1.4,
+        cooldown=18, color=(220,220,220), part_col=(200,200,200),
+    ),
+    "axe": WeaponConfig(
+        name="Machado",   key=2,
+        dmg_min=12, dmg_max=24, range_px=58,  arc_rad=1.0,
+        cooldown=30, color=(180,120, 60), part_col=(160,100, 50),
+    ),
+    "magic": WeaponConfig(
+        name="Magia",     key=3,
+        dmg_min=20, dmg_max=40, range_px=300, arc_rad=6.3,
+        cooldown=80, color=(140, 60, 240), part_col=(180,100,255),
+        special=True, proj_speed=8,
+    ),
+}
+
+class Projectile:
+    """Projétil de magia que voa até o alvo."""
+    def __init__(self, x, y, angle, config: WeaponConfig, owner_type="player"):
+        self.x = x; self.y = y
+        self.vx = math.cos(angle) * config.proj_speed
+        self.vy = math.sin(angle) * config.proj_speed
+        self.dmg_min = config.dmg_min
+        self.dmg_max = config.dmg_max
+        self.col = config.color
+        self.r = 8
+        self.life = 90
+        self.owner_type = owner_type  # "player" ou "enemy"
+        self.alive = True
+
+    def update(self):
+        self.x += self.vx
+        self.y += self.vy
+        self.life -= 1
+        if self.life <= 0:
+            self.alive = False
+
+    def draw(self, surf, cam_x, cam_y):
+        if not self.alive:
+            return
+        sx = int(self.x - cam_x); sy = int(self.y - cam_y)
+        # brilho
+        glow = pygame.Surface((self.r*4, self.r*4), pygame.SRCALPHA)
+        pygame.draw.circle(glow, (*self.col, 60), (self.r*2, self.r*2), self.r*2)
+        surf.blit(glow, (sx - self.r*2, sy - self.r*2))
+        pygame.draw.circle(surf, self.col, (sx, sy), self.r)
+        pygame.draw.circle(surf, C["white"], (sx, sy), self.r, 2)
+
+
+# ══════════════════════════════════════════════════════════════
+#  CÂMERA
+# ══════════════════════════════════════════════════════════════
+class Camera:
+    """Câmera suave que segue o jogador."""
+    def __init__(self):
+        self.x = 0.0
+        self.y = 0.0
+        self._tx = 0.0   # alvo
+        self._ty = 0.0
+        self.shake = 0   # frames de tremor
+
+    def follow(self, target_x: float, target_y: float, dt: float):
+        self._tx = target_x - SW // 2
+        self._ty = target_y - SH // 2
+        self.x = lerp(self.x, self._tx, min(1.0, 8.0 * dt))
+        self.y = lerp(self.y, self._ty, min(1.0, 8.0 * dt))
+        self.x = clamp(self.x, 0, WORLD_PX - SW)
+        self.y = clamp(self.y, 0, WORLD_PX - SH)
+
+    def add_shake(self, amount: int):
+        self.shake = amount
+
+    @property
+    def offset(self):
+        ox = oy = 0
+        if self.shake > 0:
+            ox = random.randint(-self.shake, self.shake)
+            oy = random.randint(-self.shake, self.shake)
+            self.shake -= 1
+        return self.x + ox, self.y + oy
+
+
+# ══════════════════════════════════════════════════════════════
+#  OBJETO DE CENÁRIO (árvore / rocha / bush)
+# ══════════════════════════════════════════════════════════════
+class SceneryObject:
+    """Objetos estáticos do mapa (árvores, rochas, arbustos)."""
+    def __init__(self, x, y, kind="tree"):
+        self.x = x; self.y = y
+        self.kind = kind
+        self.alive = True
+        self.respawn_ticks = -1
+
+        rng = random.Random(int(x * 1000 + y))
+
+        if kind == "tree":
+            self.r = rng.randint(18, 26)
+            self.hp = self.maxhp = 4
+            base_g = rng.randint(110, 155)
+            self.col1 = (rng.randint(28,50), base_g, rng.randint(35,60))
+            self.col2 = (max(0,self.col1[0]-15), max(0,self.col1[1]-28), max(0,self.col1[2]-12))
+            self.trunk = (rng.randint(100,145), rng.randint(65,95), rng.randint(30,55))
+
+        elif kind == "rock":
+            self.r = rng.randint(13, 20)
+            self.hp = self.maxhp = 6
+            base = rng.randint(100, 170)
+            self.col1 = (base, base, base)
+            self.col2 = (max(0,base-35),)*3
+            pts = []
+            for i in range(8):
+                a = i * math.tau / 8 + rng.uniform(-0.3, 0.3)
+                rv = self.r * rng.uniform(0.7, 1.0)
+                pts.append((math.cos(a)*rv, math.sin(a)*rv))
+            self.pts = pts
+
+        elif kind == "bush":
+            self.r = rng.randint(9, 14)
+            self.hp = self.maxhp = 2
+            self.col1 = (rng.randint(45,80), rng.randint(140,190), rng.randint(50,90))
+
+    def draw(self, surf, cam_x, cam_y):
+        if not self.alive: return
+        sx = int(self.x - cam_x)
+        sy = int(self.y - cam_y)
+        # só renderiza se na tela
+        if sx < -60 or sx > SW+60 or sy < -60 or sy > SH+60:
+            return
+
+        # sombra
+        shd = pygame.Surface((self.r*2+8, 6), pygame.SRCALPHA)
+        pygame.draw.ellipse(shd, (0,0,0,55), (0,0,self.r*2+8,6))
+        surf.blit(shd, (sx - self.r - 4, sy + self.r - 3))
+
+        if self.kind == "tree":
+            pygame.draw.rect(surf, self.trunk, (sx-5, sy-2, 10, 15))
+            pygame.draw.circle(surf, self.col2, (sx,   sy-6), self.r)
+            pygame.draw.circle(surf, self.col1, (sx-4, sy-10), int(self.r*0.85))
+            pygame.draw.circle(surf, (80,190,120), (sx+3, sy-13), int(self.r*0.55))
+
+        elif self.kind == "rock":
+            pts_abs = [(sx+px, sy+py) for px,py in self.pts]
+            pygame.draw.polygon(surf, self.col2, [(p[0],p[1]+3) for p in pts_abs])
+            pygame.draw.polygon(surf, self.col1, pts_abs)
+
+        elif self.kind == "bush":
+            pygame.draw.circle(surf, self.col1, (sx, sy), self.r)
+            lighter = tuple(min(255,c+30) for c in self.col1)
+            pygame.draw.circle(surf, lighter, (sx-3, sy-3), int(self.r*0.65))
+
+        # barra de hp se danificado
+        if self.hp < self.maxhp and self.hp > 0:
+            bw = 36
+            draw_bar(surf, sx-bw//2, sy-self.r-14, bw, 5,
+                     self.hp, self.maxhp, C["green"])
+
+    def update(self):
+        if not self.alive:
+            if self.respawn_ticks > 0:
+                self.respawn_ticks -= 1
+            elif self.respawn_ticks == 0:
+                self.alive = True
+                self.hp    = self.maxhp
+                self.respawn_ticks = -1
+
+
+# ══════════════════════════════════════════════════════════════
+#  ANIMAL (domesticável)
+# ══════════════════════════════════════════════════════════════
+ANIMAL_KINDS = {
+    "sheep": dict(
+        col=(240,240,235), col2=(200,200,195), r=14,
+        hp=30, atk=0, spd=70, xp=5, gold=8,
+        name="Ovelha", tame_hp_pct=0.5,  # domestica quando hp < 50%
+        resource=("wool", 2),
+    ),
+    "deer": dict(
+        col=(180,130, 80), col2=(140, 95,50), r=13,
+        hp=25, atk=0, spd=140, xp=8, gold=12,
+        name="Cervo", tame_hp_pct=0.4,
+        resource=("hide", 1),
+    ),
+    "wolf": dict(
+        col=(160,160,165), col2=(110,110,115), r=15,
+        hp=40, atk=8, spd=130, xp=20, gold=18,
+        name="Lobo",  tame_hp_pct=0.3,
+        resource=None,
+    ),
+    "bear": dict(
+        col=(140,100, 60), col2=(100, 70,35), r=20,
+        hp=80, atk=15, spd=90, xp=40, gold=35,
+        name="Urso",  tame_hp_pct=0.25,
+        resource=None,
+    ),
+    "fox": dict(
+        col=(210,110, 40), col2=(180, 80,20), r=11,
+        hp=20, atk=4, spd=155, xp=10, gold=10,
+        name="Raposa", tame_hp_pct=0.45,
+        resource=("pelt", 1),
+    ),
+}
+
+class Animal:
+    """Animal selvagem que pode ser domesticado."""
+    TAME_RANGE = 55  # distância máxima para tentar domesticar
+
+    def __init__(self, x, y, kind="sheep"):
+        cfg = ANIMAL_KINDS[kind]
+        self.x = x; self.y = y; self.kind = kind
+        self.col  = cfg["col"];  self.col2 = cfg["col2"]
+        self.r    = cfg["r"];    self.name = cfg["name"]
+        self.hp   = cfg["hp"];   self.maxhp = cfg["hp"]
+        self.atk  = cfg["atk"]; self.spd  = cfg["spd"]
+        self.xp   = cfg["xp"];  self.gold = cfg["gold"]
+        self.tame_hp_pct = cfg["tame_hp_pct"]
+        self.resource = cfg["resource"]
+
+        self.alive  = True
+        self.tamed  = False
+        self.owner: Optional["Player"] = None
+
+        self.vx = 0.0; self.vy = 0.0
+        self.angle = 0.0
+        self.atk_timer = 0
+        self.inv_timer = 0
+        self.state = "roam"     # roam | flee | follow | attack
+        self._roam_x = x; self._roam_y = y
+        self._wander()
+
+        # timers de animação
+        self.frame = 0
+
+    def _wander(self):
+        a = random.uniform(0, math.tau)
+        d = random.uniform(60, 220)
+        self._roam_x = self.x + math.cos(a) * d
+        self._roam_y = self.y + math.sin(a) * d
+
+    def can_tame(self) -> bool:
+        """Pode ser domesticado se hp baixo suficiente."""
+        return self.hp <= self.maxhp * self.tame_hp_pct
+
+    def tame(self, owner: "Player"):
+        self.tamed = True
+        self.owner = owner
+        self.hp    = self.maxhp   # recupera hp ao ser domesticado
+        self.state = "follow"
+
+    def update(self, player_x, player_y, enemies, dt):
+        if not self.alive: return
+        self.frame += 1
+        px, py = player_x, player_y
+        dp = dist2d(self.x, self.y, px, py)
+
+        if self.tamed:
+            # ── ANIMAL DOMESTICADO: segue o jogador ──
+            if dp > 80:
+                self.state = "follow"
+                self.angle = angle_to(self.x, self.y, px, py)
+                spd = self.spd * 1.15 * dt
+                self.x += math.cos(self.angle) * spd
+                self.y += math.sin(self.angle) * spd
+            else:
+                self.state = "idle"
+
+            # ataca inimigos próximos se tiver ataque
+            if self.atk > 0 and self.atk_timer <= 0:
+                for e in enemies:
+                    if not e.alive: continue
+                    de = dist2d(self.x, self.y, e.x, e.y)
+                    if de < 140:
+                        self.angle = angle_to(self.x, self.y, e.x, e.y)
+                        spd = self.spd * dt
+                        self.x += math.cos(self.angle) * spd
+                        self.y += math.sin(self.angle) * spd
+                        if de < self.r + e.r + 8:
+                            e.hp -= self.atk
+                            self.atk_timer = 45
+                        break
+        else:
+            # ── ANIMAL SELVAGEM ──
+            if dp < 200:
+                self.state = "flee"
+            elif self.state != "roam":
+                self.state = "roam"
+
+            if self.state == "flee":
+                self.angle = angle_to(self.x, self.y, px, py) + math.pi
+                spd = self.spd * dt
+                self.x += math.cos(self.angle) * spd
+                self.y += math.sin(self.angle) * spd
+            else:
+                rdx = self._roam_x - self.x
+                rdy = self._roam_y - self.y
+                rd  = math.sqrt(rdx*rdx + rdy*rdy)
+                if rd < 12: self._wander()
+                else:
+                    self.angle = math.atan2(rdy, rdx)
+                    spd = self.spd * 0.4 * dt
+                    self.x += rdx/rd * spd
+                    self.y += rdy/rd * spd
+
+        # restringe ao mundo
+        self.x = clamp(self.x, 30, WORLD_PX-30)
+        self.y = clamp(self.y, 30, WORLD_PX-30)
+        if self.atk_timer > 0: self.atk_timer -= 1
+        if self.inv_timer > 0: self.inv_timer -= 1
+
+    def draw(self, surf, cam_x, cam_y, font_sm):
+        if not self.alive: return
+        sx = int(self.x - cam_x); sy = int(self.y - cam_y)
+        if sx < -40 or sx > SW+40 or sy < -40 or sy > SH+40: return
+
+        # sombra
+        shd = pygame.Surface((self.r*2, 5), pygame.SRCALPHA)
+        pygame.draw.ellipse(shd, (0,0,0,50), (0,0,self.r*2,5))
+        surf.blit(shd, (sx-self.r, sy+self.r-2))
+
+        # corpo base
+        pygame.draw.circle(surf, self.col2, (sx, sy), self.r)
+        pygame.draw.circle(surf, self.col,  (sx, sy-2), int(self.r*0.88))
+
+        # detalhes por tipo
+        if self.kind == "sheep":
+            # lã fofa
+            for i in range(5):
+                a = i * math.tau/5
+                wx = sx + int(math.cos(a) * self.r * 0.65)
+                wy = sy + int(math.sin(a) * self.r * 0.65) - 2
+                pygame.draw.circle(surf, (245,245,240), (wx,wy), int(self.r*0.45))
+        elif self.kind == "bear":
+            # orelhas
+            pygame.draw.circle(surf, self.col2, (sx-self.r+3, sy-self.r+3), 6)
+            pygame.draw.circle(surf, self.col2, (sx+self.r-3, sy-self.r+3), 6)
+        elif self.kind == "wolf":
+            # focinho
+            pygame.draw.ellipse(surf, self.col2, (sx-5, sy, 10, 7))
+        elif self.kind == "fox":
+            # orelhas pontudas
+            pygame.draw.polygon(surf, self.col, [(sx-8,sy-self.r),(sx-14,sy-self.r-12),(sx-2,sy-self.r)])
+            pygame.draw.polygon(surf, self.col, [(sx+8,sy-self.r),(sx+14,sy-self.r-12),(sx+2,sy-self.r)])
+
+        # olhos
+        eo = int(self.r * 0.28)
+        pygame.draw.circle(surf, C["white"], (sx-eo, sy-eo//2), int(self.r*0.2))
+        pygame.draw.circle(surf, C["white"], (sx+eo, sy-eo//2), int(self.r*0.2))
+        ex = int(math.cos(self.angle)*2)
+        pygame.draw.circle(surf, C["black"], (sx-eo+ex, sy-eo//2), int(self.r*0.1))
+        pygame.draw.circle(surf, C["black"], (sx+eo+ex, sy-eo//2), int(self.r*0.1))
+
+        # anel dourado se domesticado
+        if self.tamed:
+            pygame.draw.circle(surf, C["gold"], (sx,sy), self.r+3, 2)
+
+        # nome e hp
+        name_surf = font_sm.render(self.name, True, C["gold"] if self.tamed else C["white"])
+        surf.blit(name_surf, (sx - name_surf.get_width()//2, sy - self.r - 20))
+        draw_bar(surf, sx-20, sy-self.r-10, 40, 4,
+                 self.hp, self.maxhp,
+                 (80,210,80) if self.tamed else (200,80,80))
+
+        # ícone "domesticável" se elegível
+        if not self.tamed and self.can_tame():
+            badge = font_sm.render("F►domesticar", True, (80,255,120))
+            surf.blit(badge, (sx - badge.get_width()//2, sy - self.r - 34))
+
+
+# ══════════════════════════════════════════════════════════════
+#  INIMIGO (NPC)
+# ══════════════════════════════════════════════════════════════
+ENEMY_KINDS = {
+    "goblin": dict(
+        col=(220,50,50),  col2=(160,20,20),  hp=22,  atk=6,
+        spd=100, r=13, xp=15, gold=10, name="Goblin",
+    ),
+    "orc": dict(
+        col=(60,170,70),  col2=(35,120,40),  hp=55,  atk=15,
+        spd=60,  r=18, xp=40, gold=28, name="Orc",
+    ),
+    "spider": dict(
+        col=(155,40,200), col2=(90,10,140),  hp=16,  atk=10,
+        spd=125, r=11, xp=12, gold=8,  name="Aranha",
+    ),
+    "skeleton": dict(
+        col=(230,230,210),col2=(180,180,160), hp=30, atk=8,
+        spd=80,  r=14, xp=20, gold=14, name="Esqueleto",
+    ),
+    "boss": dict(
+        col=(180,20,200), col2=(100,0,120),  hp=280, atk=25,
+        spd=65,  r=28, xp=200, gold=200, name="★ CHEFE ★",
+    ),
+}
+
+class Enemy:
+    """Inimigo NPC com IA de patrulha, perseguição e ataque."""
+
+    def __init__(self, x, y, kind="goblin"):
+        cfg = ENEMY_KINDS[kind]
+        self.x = x; self.y = y; self.kind = kind
+        self.col  = cfg["col"];  self.col2 = cfg["col2"]
+        self.r    = cfg["r"];    self.name = cfg["name"]
+        self.hp   = cfg["hp"];   self.maxhp = cfg["hp"]
+        self.atk  = cfg["atk"]; self.spd  = cfg["spd"]
+        self.xp   = cfg["xp"];  self.gold = cfg["gold"]
+
+        self.alive     = True
+        self.vx = 0.0; self.vy = 0.0
+        self.angle     = 0.0
+        self.atk_timer = 0
+        self.inv_timer = 0
+        self.state     = "roam"
+        self._roam_x   = x; self._roam_y = y
+        self._wander()
+
+    def _wander(self):
+        a = random.uniform(0, math.tau)
+        d = random.uniform(80, 250)
+        self._roam_x = clamp(self.x + math.cos(a)*d, 50, WORLD_PX-50)
+        self._roam_y = clamp(self.y + math.sin(a)*d, 50, WORLD_PX-50)
+
+    def update(self, player: "Player", dt: float):
+        if not self.alive: return
+        dp = dist2d(self.x, self.y, player.x, player.y)
+        self.angle = angle_to(self.x, self.y, player.x, player.y)
+
+        if dp < 300:
+            self.state = "chase"
+        else:
+            self.state = "roam"
+
+        if self.state == "chase":
+            spd = self.spd * dt
+            self.x += math.cos(self.angle) * spd
+            self.y += math.sin(self.angle) * spd
+        else:
+            rdx = self._roam_x - self.x
+            rdy = self._roam_y - self.y
+            rd  = math.sqrt(rdx*rdx + rdy*rdy)
+            if rd < 10: self._wander()
+            else:
+                spd = self.spd * 0.45 * dt
+                self.x += rdx/rd * spd
+                self.y += rdy/rd * spd
+
+        self.x = clamp(self.x, 30, WORLD_PX-30)
+        self.y = clamp(self.y, 30, WORLD_PX-30)
+        if self.atk_timer > 0: self.atk_timer -= 1
+        if self.inv_timer > 0: self.inv_timer -= 1
+
+    def draw(self, surf, cam_x, cam_y, font_sm):
+        if not self.alive: return
+        sx = int(self.x - cam_x); sy = int(self.y - cam_y)
+        if sx < -50 or sx > SW+50 or sy < -50 or sy > SH+50: return
+
+        # sombra
+        shd = pygame.Surface((self.r*2, 5), pygame.SRCALPHA)
+        pygame.draw.ellipse(shd, (0,0,0,60), (0,0,self.r*2,5))
+        surf.blit(shd, (sx-self.r, sy+self.r-2))
+
+        # corpo
+        pygame.draw.circle(surf, self.col2, (sx,   sy),   self.r)
+        pygame.draw.circle(surf, self.col,  (sx,   sy-2), int(self.r*0.87))
+
+        # boss halo
+        if self.kind == "boss":
+            pygame.draw.circle(surf, (220,0,220), (sx,sy), self.r+5, 2)
+
+        # esqueleto: costelas visíveis
+        if self.kind == "skeleton":
+            for i in range(-2,3):
+                pygame.draw.line(surf, (200,200,180),
+                                 (sx-self.r+3, sy+i*4),
+                                 (sx+self.r-3, sy+i*4), 1)
+
+        # olhos
+        eo = int(self.r*0.3)
+        pygame.draw.circle(surf, C["white"], (sx-eo, sy-eo//2), int(self.r*0.22))
+        pygame.draw.circle(surf, C["white"], (sx+eo, sy-eo//2), int(self.r*0.22))
+        ex = int(math.cos(self.angle)*2)
+        pygame.draw.circle(surf, C["black"], (sx-eo+ex, sy-eo//2), int(self.r*0.11))
+        pygame.draw.circle(surf, C["black"], (sx+eo+ex, sy-eo//2), int(self.r*0.11))
+
+        # hp bar
+        bw = self.r*2 + 4
+        draw_bar(surf, sx-bw//2, sy-self.r-14, bw, 6,
+                 self.hp, self.maxhp, C["red"])
+
+        # nome (boss)
+        if self.kind == "boss":
+            ns = font_sm.render(self.name, True, (255,100,255))
+            surf.blit(ns, (sx-ns.get_width()//2, sy-self.r-28))
+
+
+# ══════════════════════════════════════════════════════════════
+#  JOGADOR
+# ══════════════════════════════════════════════════════════════
+class Player:
+    """Entidade controlada pelo jogador."""
+
+    def __init__(self, x=None, y=None):
+        self.x = float(x or WORLD_PX//2)
+        self.y = float(y or WORLD_PX//2)
+        self.r      = 19
+        self.speed  = 215
+
+        # atributos
+        self.hp     = 100; self.maxhp = 100
+        self.xp     = 0;   self.level = 1
+        self.gold   = 50
+        self.wood   = 0;   self.gems = 0
+
+        # arma atual e cooldowns
+        self.weapon_key = "sword"
+        self.cooldowns  = {k: 0 for k in WEAPONS}
+        self.inv_timer  = 0
+        self.dmg_flash  = 0
+
+        # kills e recursos
+        self.kills: dict = {}
+        self.resources: dict = {}
+
+        # aparência
+        self.hat_col   = (50, 50, 190)
+        self.shirt_col = (70, 70, 220)
+        self.skin_col  = (255, 218, 178)
+
+        # ângulo do mouse
+        self.angle = 0.0
+
+        # atk visual
+        self.atk_anim = 0
+
+    @property
+    def weapon(self) -> WeaponConfig:
+        return WEAPONS[self.weapon_key]
+
+    def xp_needed(self) -> int:
+        return self.level * 30
+
+    def try_level_up(self) -> bool:
+        if self.xp >= self.xp_needed():
+            self.xp   -= self.xp_needed()
+            self.level += 1
+            self.maxhp += 15
+            self.hp     = self.maxhp
+            return True
+        return False
+
+    def update_movement(self, keys, dt, obstacles):
+        """Move o jogador com WASD/setas e resolve colisões com obstáculos."""
+        mvx = mvy = 0
+        if keys[pygame.K_a] or keys[pygame.K_LEFT]:  mvx -= 1
+        if keys[pygame.K_d] or keys[pygame.K_RIGHT]: mvx += 1
+        if keys[pygame.K_w] or keys[pygame.K_UP]:    mvy -= 1
+        if keys[pygame.K_s] or keys[pygame.K_DOWN]:  mvy += 1
+
+        if mvx and mvy:
+            mvx *= 0.7071; mvy *= 0.7071
+
+        # posição candidata
+        spd = self.speed * dt
+        nx = self.x + mvx * spd
+        ny = self.y + mvy * spd
+
+        # colisão com obstáculos (árvores/rochas)
+        for obj in obstacles:
+            if not obj.alive: continue
+            dx = nx - obj.x; dy = ny - obj.y
+            d  = math.sqrt(dx*dx + dy*dy)
+            mn = self.r + obj.r
+            if d < mn and d > 0.001:
+                nx += dx/d * (mn - d)
+                ny += dy/d * (mn - d)
+
+        self.x = clamp(nx, self.r, WORLD_PX-self.r)
+        self.y = clamp(ny, self.r, WORLD_PX-self.r)
+
+        if self.inv_timer  > 0: self.inv_timer  -= 1
+        if self.dmg_flash  > 0: self.dmg_flash  -= 1
+        if self.atk_anim   > 0: self.atk_anim   -= 1
+        for k in self.cooldowns:
+            if self.cooldowns[k] > 0: self.cooldowns[k] -= 1
+
+    def take_damage(self, amount: int):
+        if self.inv_timer > 0: return
+        self.hp       -= amount
+        self.inv_timer = 55
+        self.dmg_flash = 10
+
+    def draw(self, surf, cam_x, cam_y):
+        sx = int(self.x - cam_x)
+        sy = int(self.y - cam_y)
+
+        # sombra
+        shd = pygame.Surface((self.r*2, 6), pygame.SRCALPHA)
+        pygame.draw.ellipse(shd, (0,0,0,70), (0,0,self.r*2,6))
+        surf.blit(shd, (sx-self.r, sy+self.r-3))
+
+        # flash de dano
+        if self.dmg_flash > 0:
+            fl = pygame.Surface((self.r*2+6, self.r*2+6), pygame.SRCALPHA)
+            pygame.draw.circle(fl, (255,40,40,110), (self.r+3,self.r+3), self.r+3)
+            surf.blit(fl, (sx-self.r-3, sy-self.r-3))
+
+        # corpo
+        pygame.draw.circle(surf, tuple(max(0,c-30) for c in self.shirt_col), (sx,sy), self.r)
+        pygame.draw.circle(surf, self.shirt_col, (sx,sy-2), int(self.r*0.88))
+
+        # cabeça
+        pygame.draw.circle(surf, self.skin_col, (sx,sy-self.r+2), int(self.r*0.6))
+
+        # chapéu
+        hw = int(self.r*1.3); hh = int(self.r*0.5)
+        pygame.draw.rect(surf, self.hat_col, (sx-hw//2, sy-self.r-2, hw, hh))
+        pygame.draw.rect(surf, tuple(max(0,c-20) for c in self.hat_col),
+                         (sx-hw//2+2, sy-self.r-7, hw-4, 6))
+
+        # olhos seguem o mouse
+        eo = int(self.r*0.25)
+        ex = int(math.cos(self.angle)*3); ey_off = int(math.sin(self.angle)*3)
+        base_ey = sy - self.r + 6
+        for sign in (-1, 1):
+            pygame.draw.circle(surf, C["white"], (sx+sign*5, base_ey), 3)
+            pygame.draw.circle(surf, (30,30,120), (sx+sign*5+ex, base_ey+ey_off), 2)
+
+        # arma
+        self._draw_weapon(surf, sx, sy)
+
+        # arco de ataque visual
+        if self.atk_anim > 0:
+            w = self.weapon
+            asurf = pygame.Surface((SW, SH), pygame.SRCALPHA)
+            pygame.draw.arc(
+                asurf, (*w.color, 60),
+                (SW//2 - w.range_px, SH//2 - w.range_px, w.range_px*2, w.range_px*2),
+                self.angle - w.arc_rad/2,
+                self.angle + w.arc_rad/2,
+                max(2, self.atk_anim*2)
+            )
+            surf.blit(asurf, (-int(self.x - cam_x - SW//2), -int(self.y - cam_y - SH//2)))
+
+    def _draw_weapon(self, surf, sx, sy):
+        w = self.weapon
+        tip = self.r + 8
+        tx = sx + int(math.cos(self.angle)*tip)
+        ty = sy + int(math.sin(self.angle)*tip)
+
+        if self.weapon_key == "sword":
+            end = (tx + int(math.cos(self.angle)*26),
+                   ty + int(math.sin(self.angle)*26))
+            pygame.draw.line(surf, w.color, (tx,ty), end, 4)
+            pygame.draw.circle(surf, (240,240,240), end, 3)
+            # guarda
+            pa = self.angle + math.pi/2
+            gx = sx + int(math.cos(self.angle)*self.r)
+            gy = sy + int(math.sin(self.angle)*self.r)
+            pygame.draw.line(surf, (160,100,40),
+                             (gx+int(math.cos(pa)*9), gy+int(math.sin(pa)*9)),
+                             (gx-int(math.cos(pa)*9), gy-int(math.sin(pa)*9)), 3)
+
+        elif self.weapon_key == "axe":
+            end = (tx + int(math.cos(self.angle)*20),
+                   ty + int(math.sin(self.angle)*20))
+            pygame.draw.line(surf, (150,100,60), (tx,ty), end, 5)
+            pygame.draw.circle(surf, (100,150,170), end, 11)
+            pygame.draw.circle(surf, (130,180,200), end, 7)
+
+        elif self.weapon_key == "magic":
+            # orbe na mão
+            pygame.draw.circle(surf, w.color, (tx,ty), 8)
+            pulse = pygame.Surface((20,20), pygame.SRCALPHA)
+            alpha = 80 + int(math.sin(pygame.time.get_ticks()*0.01)*40)
+            pygame.draw.circle(pulse, (*w.color, alpha), (10,10), 10)
+            surf.blit(pulse, (tx-10, ty-10))
+
+
+# ══════════════════════════════════════════════════════════════
+#  HUD
+# ══════════════════════════════════════════════════════════════
+class HUD:
+    """Interface do jogador: barra de vida, arma, cooldowns, animais."""
+
+    def draw(self, surf, player: Player, tamed: List[Animal],
+             font, font_sm, font_lg):
+        # fundo semi-transparente no topo
+        hud_bg = pygame.Surface((SW, 64), pygame.SRCALPHA)
+        hud_bg.fill((14,20,14,210))
+        surf.blit(hud_bg, (0,0))
+
+        # ─── HP ───
+        draw_text(surf, font_sm, "❤ HP", 10, 6, C["red"])
+        draw_bar(surf, 10, 24, 200, 14, player.hp, player.maxhp,
+                 (210,40,40), (40,15,15), (80,30,30))
+        draw_text(surf, font_sm,
+                  f"{max(0,player.hp)}/{player.maxhp}", 12, 26,
+                  (255,200,200))
+
+        # ─── XP ───
+        draw_bar(surf, 10, 42, 200, 8, player.xp, player.xp_needed(),
+                 (40,120,230), (15,20,40), (30,50,80))
+        draw_text(surf, font_sm,
+                  f"Nv.{player.level}  XP {player.xp}/{player.xp_needed()}",
+                  12, 42, (140,190,255))
+
+        # ─── RECURSOS ───
+        resources = [
+            ("🪙", player.gold,  C["gold"]),
+            ("🪵", player.wood,  (160,110,60)),
+            ("💎", player.gems,  (100,180,255)),
+        ]
+        rx = 230
+        for icon, val, col in resources:
+            draw_text(surf, font, f"{icon}{val}", rx, 12, col)
+            rx += 110
+
+        # ─── HOTBAR ARMAS ───
+        slot_w = 58; gap = 8
+        num_weapons = len(WEAPONS)
+        total_w = num_weapons * slot_w + (num_weapons-1)*gap
+        hx = SW//2 - total_w//2
+        hy = SH - slot_w - 10
+        # painel de fundo
+        pygame.draw.rect(surf, (18,22,18),
+                         (hx-8, hy-6, total_w+16, slot_w+12),
+                         border_radius=10)
+
+        for i, (wk, wcfg) in enumerate(WEAPONS.items()):
+            sx2 = hx + i*(slot_w+gap)
+            active = player.weapon_key == wk
+            bg = (60,65,100) if active else (30,35,40)
+            pygame.draw.rect(surf, bg, (sx2,hy,slot_w,slot_w), border_radius=7)
+            border_col = C["gold"] if active else (70,80,70)
+            pygame.draw.rect(surf, border_col, (sx2,hy,slot_w,slot_w), 2, border_radius=7)
+
+            # ícone da arma
+            icons = {"sword":"⚔", "axe":"🪓", "magic":"✨"}
+            draw_text(surf, font, icons.get(wk,"?"),
+                      sx2+slot_w//2-8, hy+slot_w//2-10, wcfg.color)
+            # nome
+            draw_text(surf, font_sm, wcfg.name,
+                      sx2+slot_w//2-font_sm.size(wcfg.name)[0]//2,
+                      hy+slot_w-14, C["white"], shadow=False)
+            # número
+            draw_text(surf, font_sm, str(wcfg.key), sx2+3, hy+2, (150,160,150), shadow=False)
+
+            # cooldown overlay
+            cd = player.cooldowns[wk]
+            if cd > 0:
+                max_cd = wcfg.cooldown
+                frac   = cd / max_cd
+                ol = pygame.Surface((slot_w, slot_w), pygame.SRCALPHA)
+                ol.fill((0,0,0,int(180*frac)))
+                surf.blit(ol, (sx2, hy))
+                # texto de cooldown
+                secs = cd / FPS
+                draw_text(surf, font_sm, f"{secs:.1f}s",
+                          sx2+slot_w//2-12, hy+slot_w//2-6,
+                          (255,200,100))
+
+        # ─── ANIMAIS DOMESTICADOS ───
+        ay_start = SH - 70
+        ax_start = SW - 10
+        for i, an in enumerate(tamed):
+            ax = ax_start - (i+1)*52
+            pygame.draw.circle(surf, an.col2, (ax+20, ay_start+20), 18)
+            pygame.draw.circle(surf, an.col,  (ax+20, ay_start+18), 15)
+            pygame.draw.circle(surf, C["gold"],(ax+20, ay_start+20), 18, 2)
+            draw_text(surf, font_sm, an.name,
+                      ax+20 - font_sm.size(an.name)[0]//2,
+                      ay_start+38, (200,255,160), shadow=False)
+            # hp mini
+            draw_bar(surf, ax+2, ay_start+52, 36, 4,
+                     an.hp, an.maxhp, C["green"])
+
+        # ─── CONTADOR ANIMAIS ───
+        count_txt = f"🐾 {len(tamed)}/{MAX_TAMED}"
+        draw_text(surf, font_sm, count_txt,
+                  SW - font_sm.size(count_txt)[0] - 10, SH-85, C["gold"])
+
+
+# ══════════════════════════════════════════════════════════════
+#  MAPA / MUNDO
+# ══════════════════════════════════════════════════════════════
+class WorldMap:
+    """Mapa procedural com árvores, rochas e arbustos."""
+
+    def __init__(self, seed=42):
+        self.rng = random.Random(seed)
+        self.scenery: List[SceneryObject] = []
+        self._generate()
+
+    def _generate(self):
+        center = WORLD_PX // 2
+        counts = {"tree": 320, "rock": 140, "bush": 90}
+
+        for kind, n in counts.items():
+            for _ in range(n):
+                for _attempt in range(8):
+                    x = self.rng.randint(80, WORLD_PX-80)
+                    y = self.rng.randint(80, WORLD_PX-80)
+                    # evita colocar objetos na spawn
+                    if dist2d(x, y, center, center) < 150:
+                        continue
+                    # evita sobreposição
+                    ok = True
+                    for obj in self.scenery:
+                        if dist2d(x, y, obj.x, obj.y) < obj.r*2+10:
+                            ok = False; break
+                    if ok:
+                        self.scenery.append(SceneryObject(x, y, kind))
+                        break
+
+    def update(self):
+        for obj in self.scenery:
+            obj.update()
+
+    def draw(self, surf, cam_x, cam_y):
+        # tiles de chão
+        tx0 = int(cam_x // TILE) - 1;  ty0 = int(cam_y // TILE) - 1
+        tx1 = tx0 + SW // TILE + 3;    ty1 = ty0 + SH // TILE + 3
+        for ty in range(ty0, ty1):
+            for tx in range(tx0, tx1):
+                surf.blit(make_tile(tx,ty), (tx*TILE - cam_x, ty*TILE - cam_y))
+
+        # borda vermelha do mundo
+        pygame.draw.rect(surf, (200,50,50),
+                         (int(-cam_x), int(-cam_y), WORLD_PX, WORLD_PX), 6)
+
+        # scenery ordenada por Y (depth sort)
+        visible = [obj for obj in self.scenery
+                   if obj.alive and
+                   -60 < obj.x-cam_x < SW+60 and
+                   -60 < obj.y-cam_y < SH+60]
+        visible.sort(key=lambda o: o.y)
+        for obj in visible:
+            obj.draw(surf, cam_x, cam_y)
+
+    def solid_objects(self) -> List[SceneryObject]:
+        """Retorna objetos sólidos para colisão (exceto arbustos)."""
+        return [o for o in self.scenery if o.kind != "bush"]
+
+
+# ══════════════════════════════════════════════════════════════
+#  MINIMAP
+# ══════════════════════════════════════════════════════════════
+class Minimap:
+    """Minimapa no canto da tela."""
+    W = 120; H = 120
+
+    def draw(self, surf, player, enemies, animals, tamed_list, scenery):
+        x = SW - self.W - 8; y = 68
+        mm = pygame.Surface((self.W, self.H))
+        mm.fill((10,18,10))
+
+        sx = self.W / WORLD_PX; sy = self.H / WORLD_PX
+
+        # cenário
+        for o in scenery:
+            if not o.alive: continue
+            col = (30,100,30) if o.kind == "tree" else (120,120,120)
+            mm.set_at((clamp(int(o.x*sx),0,self.W-1),
+                       clamp(int(o.y*sy),0,self.H-1)), col)
+
+        # animais
+        for an in animals:
+            if not an.alive: continue
+            col = C["gold"] if an.tamed else (180,130,60)
+            px2 = clamp(int(an.x*sx),0,self.W-1)
+            py2 = clamp(int(an.y*sy),0,self.H-1)
+            pygame.draw.rect(mm, col, (px2-1, py2-1, 3,3))
+
+        # inimigos
+        for e in enemies:
+            if not e.alive: continue
+            ex2 = clamp(int(e.x*sx),0,self.W-1)
+            ey2 = clamp(int(e.y*sy),0,self.H-1)
+            pygame.draw.rect(mm, C["red"], (ex2-1, ey2-1, 3,3))
+
+        # player
+        ppx = clamp(int(player.x*sx),0,self.W-1)
+        ppy = clamp(int(player.y*sy),0,self.H-1)
+        pygame.draw.rect(mm, (80,180,255), (ppx-2, ppy-2, 5,5))
+
+        pygame.draw.rect(mm, (140,160,140), (0,0,self.W,self.H), 1)
+        surf.blit(mm, (x,y))
+
+
+# ══════════════════════════════════════════════════════════════
+#  SISTEMA DE MENSAGENS FLUTUANTES
+# ══════════════════════════════════════════════════════════════
+class MessageSystem:
+    """Exibe mensagens temporárias na tela."""
+    def __init__(self):
+        self._msg   = ""
+        self._timer = 0
+
+    def show(self, text: str, duration_frames: int = 150):
+        self._msg   = text
+        self._timer = duration_frames
+
+    def update(self):
+        if self._timer > 0: self._timer -= 1
+
+    def draw(self, surf, font):
+        if self._timer <= 0: return
+        alpha = min(255, self._timer * 8)
+        ms    = font.render(self._msg, True, C["gold"])
+        ms.set_alpha(alpha)
+        bg = pygame.Surface((ms.get_width()+18, ms.get_height()+10), pygame.SRCALPHA)
+        bg.fill((0,0,0,120))
+        bx = SW//2 - ms.get_width()//2 - 9
+        by = SH - 130
+        surf.blit(bg, (bx, by))
+        surf.blit(ms, (bx+9, by+5))
+
+
+# ══════════════════════════════════════════════════════════════
+#  JOGO PRINCIPAL
+# ══════════════════════════════════════════════════════════════
+class Game:
+    """Classe principal que gerencia o loop e todos os subsistemas."""
+
+    def __init__(self):
+        pygame.init()
+        pygame.display.set_caption(TITLE)
+        self.screen = pygame.display.set_mode((SW, SH))
+        self.clock  = pygame.time.Clock()
+
+        # fontes
+        self.font_lg = pygame.font.SysFont("Consolas", 42, bold=True)
+        self.font    = pygame.font.SysFont("Consolas", 22, bold=True)
+        self.font_sm = pygame.font.SysFont("Consolas", 15, bold=True)
+
+        # subsistemas
+        self.camera   = Camera()
+        self.world    = WorldMap()
+        self.hud      = HUD()
+        self.minimap  = Minimap()
+        self.messages = MessageSystem()
+
+        # entidades
+        self.player     = Player()
+        self.enemies:   List[Enemy]    = []
+        self.animals:   List[Animal]   = []
+        self.projectiles: List[Projectile] = []
+        self.particles: List[Particle] = []
+        self.dmg_nums:  List[DamageNumber] = []
+
+        # estado
+        self.paused  = False
+        self.dead    = False
+        self.running = True
+
+        # inicializa mundo
+        self._spawn_initial()
+        self.messages.show("🎮 WASD=mover | Click=atacar | F=domesticar | 1/2/3=arma", 240)
+
+    # ── spawn inicial ──────────────────────────────────────────
+    def _spawn_initial(self):
+        self._spawn_enemies(18, include_boss=True)
+        self._spawn_animals(25)
+
+    def _spawn_enemies(self, n: int, include_boss=False):
+        kinds   = ["goblin","orc","spider","skeleton"]
+        weights = [50, 20, 25, 5]
+        for _ in range(n):
+            a = random.uniform(0, math.tau)
+            d = random.uniform(350, WORLD_PX * 0.42)
+            x = clamp(WORLD_PX//2 + math.cos(a)*d, 80, WORLD_PX-80)
+            y = clamp(WORLD_PX//2 + math.sin(a)*d, 80, WORLD_PX-80)
+            k = random.choices(kinds, weights)[0]
+            self.enemies.append(Enemy(x, y, k))
+        if include_boss:
+            self.enemies.append(Enemy(WORLD_PX-250, WORLD_PX-250, "boss"))
+
+    def _spawn_animals(self, n: int):
+        kinds   = list(ANIMAL_KINDS.keys())
+        weights = [30,25,20,15,10]
+        for _ in range(n):
+            a = random.uniform(0, math.tau)
+            d = random.uniform(200, WORLD_PX*0.45)
+            x = clamp(WORLD_PX//2 + math.cos(a)*d, 80, WORLD_PX-80)
+            y = clamp(WORLD_PX//2 + math.sin(a)*d, 80, WORLD_PX-80)
+            k = random.choices(kinds, weights)[0]
+            self.animals.append(Animal(x, y, k))
+
+    # ── propriedade de animais domesticados ───────────────────
+    @property
+    def tamed_animals(self) -> List[Animal]:
+        return [a for a in self.animals if a.tamed and a.alive]
+
+    # ── ataque ────────────────────────────────────────────────
+    def do_attack(self, mx, my):
+        """Executa ataque na direção do mouse."""
+        w = self.player.weapon
+        if self.player.cooldowns[self.player.weapon_key] > 0:
+            return  # ainda em cooldown
+
+        self.player.cooldowns[self.player.weapon_key] = w.cooldown
+        self.player.atk_anim = 10
+
+        # magia: dispara projétil
+        if w.special and w.proj_speed > 0:
+            a = angle_to(self.player.x, self.player.y,
+                         self.player.x + (mx - SW//2),
+                         self.player.y + (my - SH//2))
+            self.projectiles.append(
+                Projectile(self.player.x, self.player.y, a, w)
+            )
+            self._spawn_parts(self.player.x, self.player.y, w.part_col, 6, 2, 20)
+            return
+
+        # melee: dano em área
+        cam_x, cam_y = self.camera.offset
+        hit = False
+        for e in self.enemies:
+            if not e.alive: continue
+            d = dist2d(self.player.x, self.player.y, e.x, e.y)
+            if d <= w.range_px + e.r:
+                ang_diff = abs(
+                    math.atan2(e.y-self.player.y, e.x-self.player.x) - self.player.angle
+                )
+                in_arc = math.tau - w.arc_rad < 6.4 or \
+                         min(ang_diff, math.tau-ang_diff) < w.arc_rad/2
+                if in_arc:
+                    dmg = random.randint(w.dmg_min, w.dmg_max)
+                    e.hp  -= dmg
+                    e.inv_timer = 15
+                    hit = True
+                    self.dmg_nums.append(DamageNumber(e.x, e.y-20, f"-{dmg}", (255,90,90)))
+                    self._spawn_parts(e.x, e.y, w.part_col, 8)
+                    self.camera.add_shake(3)
+                    if e.hp <= 0:
+                        e.alive = False
+                        self.player.xp   += e.xp
+                        self.player.gold += e.gold
+                        self.player.kills[e.kind] = \
+                            self.player.kills.get(e.kind, 0) + 1
+                        self._spawn_parts(e.x, e.y, C["gold"], 14, 4, 50)
+                        self.messages.show(
+                            f"{e.name} derrotado! +{e.gold}🪙 +{e.xp}XP"
+                        )
+
+        # dano em árvores/rochas com machado/espada
+        if self.player.weapon_key in ("axe","sword"):
+            for obj in self.world.scenery:
+                if not obj.alive or obj.kind == "bush": continue
+                d = dist2d(self.player.x, self.player.y, obj.x, obj.y)
+                if d <= w.range_px + obj.r:
+                    obj.hp -= 1
+                    hit = True
+                    self._spawn_parts(obj.x, obj.y,
+                                      (139,100,60) if obj.kind=="tree" else (160,160,160), 5, 2)
+                    if obj.hp <= 0:
+                        obj.alive = False
+                        obj.respawn_ticks = FPS * 20
+                        if obj.kind == "tree":
+                            gained = random.randint(2,5)
+                            self.player.wood += gained
+                            self.messages.show(f"🪵 Árvore cortada! +{gained} madeira")
+                        elif obj.kind == "rock":
+                            gained = random.randint(1,3)
+                            self.player.gems += gained
+                            self.messages.show(f"💎 Rocha destruída! +{gained} gemas")
+
+        if not hit:
+            self._spawn_parts(
+                self.player.x + math.cos(self.player.angle)*40,
+                self.player.y + math.sin(self.player.angle)*40,
+                C["white"], 4, 1.5, 18)
+
+    # ── tentar domesticar ─────────────────────────────────────
+    def try_tame_nearest(self):
+        tamed_list = self.tamed_animals
+        if len(tamed_list) >= MAX_TAMED:
+            self.messages.show(f"Máximo de {MAX_TAMED} animais atingido!")
+            return
+
+        best = None; best_d = Animal.TAME_RANGE
+        for an in self.animals:
+            if an.tamed or not an.alive: continue
+            d = dist2d(self.player.x, self.player.y, an.x, an.y)
+            if d < best_d and an.can_tame():
+                best = an; best_d = d
+
+        if best:
+            best.tame(self.player)
+            self._spawn_parts(best.x, best.y, C["gold"], 16, 4, 55)
+            self.messages.show(f"🐾 {best.name} domesticado!")
+        else:
+            self.messages.show("Nenhum animal domesticável próximo. (reduza o HP primeiro!)")
+
+    # ── partículas ────────────────────────────────────────────
+    def _spawn_parts(self, x, y, col, n=8, spd=3, life=35, r=3):
+        for _ in range(min(n, MAX_PARTICLES - len(self.particles))):
+            self.particles.append(Particle(x, y, col, spd, life, r))
+
+    # ── update ────────────────────────────────────────────────
+    def update(self, dt: float):
+        if self.paused or self.dead:
+            return
+
+        keys = pygame.key.get_pressed()
+        obstacles = self.world.solid_objects()
+
+        # player
+        self.player.update_movement(keys, dt, obstacles)
+        mx, my = pygame.mouse.get_pos()
+        self.player.angle = math.atan2(my - SH//2, mx - SW//2)
+
+        # camera
+        self.camera.follow(self.player.x, self.player.y, dt)
+
+        # level up
+        while self.player.try_level_up():
+            self._spawn_parts(self.player.x, self.player.y, C["gold"], 24, 5, 60)
+            self.messages.show(f"🎉 NÍVEL {self.player.level}! HP máx +15!", 180)
+            if self.player.level % 4 == 0:
+                self._spawn_enemies(5)
+
+        # inimigos
+        for e in self.enemies:
+            e.update(self.player, dt)
+            if not e.alive: continue
+            d = dist2d(self.player.x, self.player.y, e.x, e.y)
+            if d < self.player.r + e.r + 5 and e.atk_timer <= 0:
+                self.player.take_damage(e.atk)
+                e.atk_timer = 45
+                self.camera.add_shake(5)
+                self.dmg_nums.append(
+                    DamageNumber(self.player.x, self.player.y-30,
+                                 f"-{e.atk}", (255,50,50)))
+                if self.player.hp <= 0:
+                    self.dead = True
+                    return
+
+        # respawn inimigos
+        alive_enemies = sum(1 for e in self.enemies if e.alive)
+        if alive_enemies < 8:
+            self._spawn_enemies(4)
+
+        # animais
+        alive_enemies_list = [e for e in self.enemies if e.alive]
+        for an in self.animals:
+            an.update(self.player.x, self.player.y, alive_enemies_list, dt)
+            if not an.alive: continue
+            # colisão com player (dano se selvagem e agressivo)
+            d = dist2d(self.player.x, self.player.y, an.x, an.y)
+            if not an.tamed and an.atk > 0 and d < self.player.r + an.r + 4:
+                if an.atk_timer <= 0:
+                    self.player.take_damage(an.atk // 2)
+                    an.atk_timer = 55
+
+        # respawn animais
+        alive_anim = sum(1 for a in self.animals if a.alive)
+        if alive_anim < 10:
+            self._spawn_animals(5)
+
+        # projéteis
+        cam_x, cam_y = self.camera.offset
+        for proj in self.projectiles[:]:
+            proj.update()
+            if not proj.alive:
+                self.projectiles.remove(proj)
+                continue
+            # colisão com inimigos
+            hit_any = False
+            for e in self.enemies:
+                if not e.alive: continue
+                if dist2d(proj.x, proj.y, e.x, e.y) < proj.r + e.r:
+                    dmg = random.randint(proj.dmg_min, proj.dmg_max)
+                    e.hp -= dmg
+                    self._spawn_parts(e.x, e.y, proj.col, 10)
+                    self.dmg_nums.append(
+                        DamageNumber(e.x, e.y-20, f"-{dmg}", (200,100,255)))
+                    self.camera.add_shake(4)
+                    if e.hp <= 0:
+                        e.alive = False
+                        self.player.xp   += e.xp
+                        self.player.gold += e.gold
+                        self.player.kills[e.kind] = \
+                            self.player.kills.get(e.kind,0)+1
+                        self._spawn_parts(e.x, e.y, C["gold"], 16, 5, 55)
+                        self.messages.show(
+                            f"{e.name} derrotado! +{e.gold}🪙 +{e.xp}XP")
+                    proj.alive = False; hit_any = True; break
+            # fora do mundo
+            if (proj.x < 0 or proj.x > WORLD_PX or
+                    proj.y < 0 or proj.y > WORLD_PX):
+                proj.alive = False
+            if not proj.alive and proj in self.projectiles:
+                self.projectiles.remove(proj)
+
+        # partículas e números
+        for p in self.particles[:]:
+            p.update()
+            if p.life <= 0: self.particles.remove(p)
+        for n in self.dmg_nums[:]:
+            n.update()
+            if n.life <= 0: self.dmg_nums.remove(n)
+
+        # mundo
+        self.world.update()
+        self.messages.update()
+
+    # ── render ────────────────────────────────────────────────
+    def render(self):
+        cam_x, cam_y = self.camera.offset
+
+        # ── chão e cenário ──
+        self.world.draw(self.screen, cam_x, cam_y)
+
+        # ── depth sort: animais + inimigos + player ──
+        all_sprites = []
+        for an in self.animals:
+            if an.alive: all_sprites.append((an.y, "animal", an))
+        for e in self.enemies:
+            if e.alive: all_sprites.append((e.y, "enemy", e))
+        all_sprites.append((self.player.y, "player", self.player))
+        all_sprites.sort(key=lambda s: s[0])
+
+        for _, kind, obj in all_sprites:
+            if kind == "animal":
+                obj.draw(self.screen, cam_x, cam_y, self.font_sm)
+            elif kind == "enemy":
+                obj.draw(self.screen, cam_x, cam_y, self.font_sm)
+            elif kind == "player":
+                if not self.dead:
+                    obj.draw(self.screen, cam_x, cam_y)
+
+        # ── projéteis ──
+        for proj in self.projectiles:
+            proj.draw(self.screen, cam_x, cam_y)
+
+        # ── partículas ──
+        for p in self.particles:
+            p.draw(self.screen, cam_x, cam_y)
+
+        # ── números de dano ──
+        for n in self.dmg_nums:
+            n.draw(self.screen, self.font, cam_x, cam_y)
+
+        # ── HUD ──
+        self.hud.draw(self.screen, self.player, self.tamed_animals,
+                      self.font, self.font_sm, self.font_lg)
+
+        # ── minimap ──
+        self.minimap.draw(
+            self.screen, self.player,
+            self.enemies, self.animals,
+            self.tamed_animals, self.world.scenery
+        )
+
+        # ── mensagens ──
+        self.messages.draw(self.screen, self.font)
+
+        # ── overlays ──
+        if self.dead:
+            self._draw_death_screen()
+        elif self.paused:
+            self._draw_pause_screen()
+
+        pygame.display.flip()
+
+    # ── telas de overlay ──────────────────────────────────────
+    def _draw_death_screen(self):
+        ov = pygame.Surface((SW, SH), pygame.SRCALPHA)
+        ov.fill((0,0,0,190)); self.screen.blit(ov,(0,0))
+        draw_text(self.screen, self.font_lg, "VOCÊ MORREU",
+                  SW//2-160, SH//2-90, C["red"], center=False)
+        stats = [
+            f"Nível {self.player.level}",
+            f"Abates: {sum(self.player.kills.values())}",
+            f"Ouro coletado: {self.player.gold}",
+            "",
+            "Pressione  R  para renascer",
+            "Pressione  ESC  para sair",
+        ]
+        for i, line in enumerate(stats):
+            draw_text(self.screen, self.font, line,
+                      SW//2, SH//2-20+i*32, C["white"], center=True)
+
+    def _draw_pause_screen(self):
+        ov = pygame.Surface((SW, SH), pygame.SRCALPHA)
+        ov.fill((0,0,0,160)); self.screen.blit(ov,(0,0))
+        draw_text(self.screen, self.font_lg, "PAUSADO",
+                  SW//2, SH//2-120, C["white"], center=True)
+        lines = [
+            f"Nível: {self.player.level}",
+            f"HP: {self.player.hp}/{self.player.maxhp}",
+            f"Ouro: {self.player.gold}  Madeira: {self.player.wood}  Gemas: {self.player.gems}",
+            f"Animais domesticados: {len(self.tamed_animals)}/{MAX_TAMED}",
+            "",
+            "ESC / P  ─  continuar",
+            "Q        ─  sair",
+        ]
+        for i, line in enumerate(lines):
+            draw_text(self.screen, self.font, line,
+                      SW//2, SH//2-60+i*30, (200,220,200), center=True)
+
+    # ── eventos ───────────────────────────────────────────────
+    def handle_events(self):
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                self.running = False
+
+            elif ev.type == pygame.KEYDOWN:
+                # ── pausa ──
+                if ev.key in (pygame.K_ESCAPE, pygame.K_p):
+                    if not self.dead: self.paused = not self.paused
+
+                # ── sair no pause ──
+                if ev.key == pygame.K_q and self.paused:
+                    self.running = False
+
+                # ── renascer ──
+                if ev.key == pygame.K_r and self.dead:
+                    self.player.hp    = self.player.maxhp // 2
+                    self.player.x     = float(WORLD_PX // 2)
+                    self.player.y     = float(WORLD_PX // 2)
+                    self.player.gold  = max(0, int(self.player.gold * 0.8))
+                    self.dead = False
+                    self.messages.show("Você renasceu! (perdeu 20% do ouro)")
+
+                # ── trocar arma ──
+                wmap = {"1": "sword", "2": "axe", "3": "magic"}
+                if ev.unicode in wmap and not self.paused and not self.dead:
+                    self.player.weapon_key = wmap[ev.unicode]
+
+                # ── domesticar ──
+                if ev.key in (pygame.K_f, pygame.K_e) \
+                        and not self.paused and not self.dead:
+                    self.try_tame_nearest()
+
+            elif ev.type == pygame.MOUSEBUTTONDOWN:
+                if ev.button == 1 and not self.paused and not self.dead:
+                    mx, my = ev.pos
+                    self.do_attack(mx, my)
+
+            elif ev.type == pygame.MOUSEWHEEL:
+                keys_list = list(WEAPONS.keys())
+                idx = keys_list.index(self.player.weapon_key)
+                self.player.weapon_key = keys_list[(idx - ev.y) % len(keys_list)]
+
+    # ── loop principal ─────────────────────────────────────────
+    def run(self):
+        while self.running:
+            dt = self.clock.tick(FPS) / 1000.0
+            self.handle_events()
+            self.update(dt)
+            self.render()
+        pygame.quit()
+        sys.exit()
+
+
+# ══════════════════════════════════════════════════════════════
+#  ENTRY POINT
+# ══════════════════════════════════════════════════════════════
+if __name__ == "__main__":
+    game = Game()
+    game.run()
