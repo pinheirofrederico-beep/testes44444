@@ -6,26 +6,58 @@
   <style>
     body { margin: 0; overflow: hidden; }
     canvas { display: block; }
+    #hud {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: white;
+      font-family: Arial, sans-serif;
+      font-size: 18px;
+      background: rgba(0,0,0,0.5);
+      padding: 10px;
+      border-radius: 8px;
+    }
+    .bar {
+      width: 200px;
+      height: 20px;
+      background: #333;
+      border-radius: 5px;
+      margin: 5px 0;
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      transition: width 0.2s;
+    }
+    #energy-fill { background: red; }
+    #stamina-fill { background: green; }
   </style>
 </head>
 <body>
+<div id="hud">
+  <div>Energia:</div>
+  <div class="bar"><div id="energy-fill" class="bar-fill" style="width:100%"></div></div>
+  <div>Stamina:</div>
+  <div class="bar"><div id="stamina-fill" class="bar-fill" style="width:100%"></div></div>
+  <div>Pontuação: <span id="score">0</span></div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.152.2/examples/js/loaders/GLTFLoader.js"></script>
 
 <script>
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x87ceeb); // céu azul
+  scene.background = new THREE.Color(0x87ceeb);
   const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
   const renderer = new THREE.WebGLRenderer({antialias:true});
   renderer.setSize(window.innerWidth, window.innerHeight);
   document.body.appendChild(renderer.domElement);
 
-  // Luz
   const light = new THREE.DirectionalLight(0xffffff, 1);
   light.position.set(10, 20, 10);
   scene.add(light);
 
-  // Chão com textura PBR
+  // Chão
   const floorTexture = new THREE.TextureLoader().load("https://polyhaven.com/a/concrete_floor_001/concrete_floor_001_diff_1k.jpg");
   floorTexture.wrapS = floorTexture.wrapT = THREE.RepeatWrapping;
   floorTexture.repeat.set(50, 50);
@@ -36,7 +68,7 @@
   floor.rotation.x = -Math.PI / 2;
   scene.add(floor);
 
-  // Carregar personagem humano (GLTF)
+  // Player
   let player;
   const loader = new THREE.GLTFLoader();
   loader.load("https://models.readyplayer.me/64b6f7b3b3d3a2f0c9f1.glb", function(gltf){
@@ -46,44 +78,18 @@
     scene.add(player);
   });
 
-  // Carregar cidade urbana (GLTF)
-  loader.load("https://sketchfab.com/3d-models/free-city-scene-example.glb", function(gltf){
-    const cidade = gltf.scene;
-    cidade.scale.set(10,10,10);
-    scene.add(cidade);
-  });
+  // HUD variáveis
+  let energy = 100;
+  let stamina = 100;
+  let score = 0;
 
-  // Sons
-  const listener = new THREE.AudioListener();
-  camera.add(listener);
-  const audioLoader = new THREE.AudioLoader();
+  function updateHUD() {
+    document.getElementById("energy-fill").style.width = energy + "%";
+    document.getElementById("stamina-fill").style.width = stamina + "%";
+    document.getElementById("score").textContent = score;
+  }
 
-  // Som ambiente da cidade
-  const citySound = new THREE.Audio(listener);
-  audioLoader.load('sons/cidade.mp3', function(buffer) {
-    citySound.setBuffer(buffer);
-    citySound.setLoop(true);
-    citySound.setVolume(0.5);
-    citySound.play();
-  });
-
-  // Som de passos
-  const footstepSound = new THREE.Audio(listener);
-  audioLoader.load('sons/passos.mp3', function(buffer) {
-    footstepSound.setBuffer(buffer);
-    footstepSound.setLoop(false);
-    footstepSound.setVolume(0.7);
-  });
-
-  // Som de salto
-  const jumpSound = new THREE.Audio(listener);
-  audioLoader.load('sons/salto.mp3', function(buffer) {
-    jumpSound.setBuffer(buffer);
-    jumpSound.setLoop(false);
-    jumpSound.setVolume(0.8);
-  });
-
-  // Movimento básico
+  // Movimento
   const keys = {};
   let velocity = new THREE.Vector3();
   let speed = 0.2;
@@ -106,16 +112,19 @@
     if (keys['KeyA']) player.position.x -= moveSpeed;
     if (keys['KeyD']) player.position.x += moveSpeed;
 
-    // Som de passos
-    if ((keys['KeyW'] || keys['KeyA'] || keys['KeyS'] || keys['KeyD']) && onGround) {
-      if (!footstepSound.isPlaying) footstepSound.play();
+    // Stamina diminui ao correr
+    if (keys['ShiftLeft'] && stamina > 0) {
+      stamina -= 0.2;
+    } else if (stamina < 100) {
+      stamina += 0.1; // recupera lentamente
     }
 
     // Pulo
     if (keys['Space'] && onGround) {
       velocity.y = jumpForce;
       onGround = false;
-      jumpSound.play();
+      energy -= 2; // gastar energia ao pular
+      score += 10; // ganhar pontos ao realizar ação
     }
 
     // Gravidade
@@ -129,7 +138,10 @@
       }
     }
 
-    // Câmera dinâmica
+    // Atualizar HUD
+    updateHUD();
+
+    // Câmera
     camera.position.set(player.position.x, player.position.y + 5, player.position.z + 15);
     camera.lookAt(player.position);
 
