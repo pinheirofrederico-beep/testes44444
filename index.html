@@ -13,7 +13,6 @@
 <script src="https://cdn.jsdelivr.net/npm/three@0.152.2/examples/js/loaders/GLTFLoader.js"></script>
 
 <script>
-  // Cena, câmera e renderizador
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x87ceeb); // céu azul
   const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
@@ -26,8 +25,8 @@
   light.position.set(10, 20, 10);
   scene.add(light);
 
-  // Chão com textura
-  const floorTexture = new THREE.TextureLoader().load("https://threejs.org/examples/textures/grasslight-big.jpg");
+  // Chão com textura PBR
+  const floorTexture = new THREE.TextureLoader().load("https://polyhaven.com/a/concrete_floor_001/concrete_floor_001_diff_1k.jpg");
   floorTexture.wrapS = floorTexture.wrapT = THREE.RepeatWrapping;
   floorTexture.repeat.set(50, 50);
   const floor = new THREE.Mesh(
@@ -37,34 +36,54 @@
   floor.rotation.x = -Math.PI / 2;
   scene.add(floor);
 
-  // Paredes/prédios
-  function criarPredio(x, z, altura) {
-    const tex = new THREE.TextureLoader().load("https://threejs.org/examples/textures/brick_diffuse.jpg");
-    const predio = new THREE.Mesh(
-      new THREE.BoxGeometry(10, altura, 10),
-      new THREE.MeshStandardMaterial({ map: tex })
-    );
-    predio.position.set(x, altura/2, z);
-    scene.add(predio);
-    return predio;
-  }
-
-  const obstaculos = [];
-  obstaculos.push(criarPredio(20, 0, 15));
-  obstaculos.push(criarPredio(-20, -10, 20));
-  obstaculos.push(criarPredio(0, 30, 10));
-
-  // Player (modelo GLTF)
+  // Carregar personagem humano (GLTF)
   let player;
   const loader = new THREE.GLTFLoader();
-  loader.load("https://threejs.org/examples/models/gltf/RobotExpressive/RobotExpressive.glb", function(gltf){
+  loader.load("https://models.readyplayer.me/64b6f7b3b3d3a2f0c9f1.glb", function(gltf){
     player = gltf.scene;
-    player.scale.set(0.5,0.5,0.5);
+    player.scale.set(1,1,1);
     player.position.set(0,1,0);
     scene.add(player);
   });
 
-  // Movimento
+  // Carregar cidade urbana (GLTF)
+  loader.load("https://sketchfab.com/3d-models/free-city-scene-example.glb", function(gltf){
+    const cidade = gltf.scene;
+    cidade.scale.set(10,10,10);
+    scene.add(cidade);
+  });
+
+  // Sons
+  const listener = new THREE.AudioListener();
+  camera.add(listener);
+  const audioLoader = new THREE.AudioLoader();
+
+  // Som ambiente da cidade
+  const citySound = new THREE.Audio(listener);
+  audioLoader.load('sons/cidade.mp3', function(buffer) {
+    citySound.setBuffer(buffer);
+    citySound.setLoop(true);
+    citySound.setVolume(0.5);
+    citySound.play();
+  });
+
+  // Som de passos
+  const footstepSound = new THREE.Audio(listener);
+  audioLoader.load('sons/passos.mp3', function(buffer) {
+    footstepSound.setBuffer(buffer);
+    footstepSound.setLoop(false);
+    footstepSound.setVolume(0.7);
+  });
+
+  // Som de salto
+  const jumpSound = new THREE.Audio(listener);
+  audioLoader.load('sons/salto.mp3', function(buffer) {
+    jumpSound.setBuffer(buffer);
+    jumpSound.setLoop(false);
+    jumpSound.setVolume(0.8);
+  });
+
+  // Movimento básico
   const keys = {};
   let velocity = new THREE.Vector3();
   let speed = 0.2;
@@ -87,10 +106,16 @@
     if (keys['KeyA']) player.position.x -= moveSpeed;
     if (keys['KeyD']) player.position.x += moveSpeed;
 
+    // Som de passos
+    if ((keys['KeyW'] || keys['KeyA'] || keys['KeyS'] || keys['KeyD']) && onGround) {
+      if (!footstepSound.isPlaying) footstepSound.play();
+    }
+
     // Pulo
     if (keys['Space'] && onGround) {
       velocity.y = jumpForce;
       onGround = false;
+      jumpSound.play();
     }
 
     // Gravidade
@@ -103,23 +128,6 @@
         onGround = true;
       }
     }
-
-    // Wall run
-    obstaculos.forEach(obs => {
-      const dist = player.position.distanceTo(obs.position);
-      if (dist < 8 && keys['KeyW'] && keys['ShiftLeft']) {
-        player.position.y += 0.05;
-      }
-    });
-
-    // Wall jump
-    obstaculos.forEach(obs => {
-      const dist = player.position.distanceTo(obs.position);
-      if (dist < 8 && keys['Space']) {
-        velocity.y = jumpForce * 1.5;
-        player.position.x += (player.position.x > obs.position.x ? 1 : -1) * 2;
-      }
-    });
 
     // Câmera dinâmica
     camera.position.set(player.position.x, player.position.y + 5, player.position.z + 15);
