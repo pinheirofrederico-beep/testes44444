@@ -1,154 +1,641 @@
 <!DOCTYPE html>
-<html lang="pt-BR">
+<html>
 <head>
-  <meta charset="UTF-8">
-  <title>Parkour 3D Urbano</title>
-  <style>
-    body { margin: 0; overflow: hidden; }
-    canvas { display: block; }
-    #hud {
-      position: absolute;
-      top: 10px;
-      left: 10px;
-      color: white;
-      font-family: Arial, sans-serif;
-      font-size: 18px;
-      background: rgba(0,0,0,0.5);
-      padding: 10px;
-      border-radius: 8px;
-    }
-    .bar {
-      width: 200px;
-      height: 20px;
-      background: #333;
-      border-radius: 5px;
-      margin: 5px 0;
-      overflow: hidden;
-    }
-    .bar-fill {
-      height: 100%;
-      transition: width 0.2s;
-    }
-    #energy-fill { background: red; }
-    #stamina-fill { background: green; }
-  </style>
+<meta charset="UTF-8">
+<title>Pixel Runner — Parkour 2D</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a1a; overflow: hidden; font-family: 'Courier New', monospace; }
+  canvas { display: block; image-rendering: pixelated; }
+  #ui { position: absolute; top: 0; left: 0; width: 100%; pointer-events: none; }
+  #hud { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: rgba(0,0,0,0.7); border-bottom: 2px solid #FFD700; }
+  .hud-item { color: #FFD700; font-size: 13px; text-shadow: 0 0 8px #FFD700; }
+  .hud-coins { color: #FFD700; }
+  #screens { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+  .screen { display: none; flex-direction: column; align-items: center; gap: 12px; background: rgba(0,0,10,0.95); border: 3px solid #FFD700; padding: 24px; border-radius: 4px; max-width: 420px; width: 90%; max-height: 90vh; overflow-y: auto; }
+  .screen.active { display: flex; }
+  .screen h1 { color: #FFD700; font-size: 22px; text-shadow: 0 0 12px #FFD700; text-align: center; }
+  .screen h2 { color: #FFD700; font-size: 16px; text-align: center; }
+  .btn { background: #1a1a3a; border: 2px solid #FFD700; color: #FFD700; padding: 10px 24px; font-family: 'Courier New', monospace; font-size: 14px; cursor: pointer; transition: all 0.1s; width: 100%; text-align: center; border-radius: 2px; }
+  .btn:hover { background: #FFD700; color: #0a0a1a; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-small { padding: 6px 14px; font-size: 12px; width: auto; }
+  .skill-item { width: 100%; background: #0d0d2a; border: 1px solid #333; padding: 10px; display: flex; justify-content: space-between; align-items: center; gap: 8px; border-radius: 2px; }
+  .skill-info { flex: 1; }
+  .skill-name { color: #FFD700; font-size: 12px; font-weight: bold; }
+  .skill-desc { color: #aaa; font-size: 10px; margin-top: 2px; }
+  .skill-cost { color: #FFD700; font-size: 11px; }
+  .owned-badge { color: #00FF88; font-size: 11px; }
+  .level-info { color: #aaa; font-size: 12px; text-align: center; }
+  .controls-info { color: #888; font-size: 10px; text-align: center; line-height: 1.6; }
+  .death-msg { color: #FF4444; font-size: 13px; text-align: center; }
+  .win-msg { color: #00FF88; font-size: 13px; text-align: center; }
+  .section-title { color: #888; font-size: 11px; text-align: left; width: 100%; border-bottom: 1px solid #333; padding-bottom: 4px; }
+  #abilities-bar { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); display: flex; gap: 6px; pointer-events: none; }
+  .ability-slot { width: 36px; height: 36px; background: rgba(0,0,0,0.8); border: 2px solid #444; display: flex; align-items: center; justify-content: center; font-size: 16px; border-radius: 3px; position: relative; }
+  .ability-slot.ready { border-color: #FFD700; }
+  .ability-slot.active { border-color: #00FFFF; background: rgba(0,255,255,0.2); }
+  .ability-slot.cooldown { border-color: #FF4444; }
+  .cd-bar { position: absolute; bottom: 0; left: 0; height: 3px; background: #FF4444; transition: width 0.1s; border-radius: 0 0 2px 2px; }
+</style>
 </head>
 <body>
-<div id="hud">
-  <div>Energia:</div>
-  <div class="bar"><div id="energy-fill" class="bar-fill" style="width:100%"></div></div>
-  <div>Stamina:</div>
-  <div class="bar"><div id="stamina-fill" class="bar-fill" style="width:100%"></div></div>
-  <div>Pontuação: <span id="score">0</span></div>
+<canvas id="c"></canvas>
+<div id="ui">
+  <div id="hud">
+    <span class="hud-item" id="hud-level">Nível 1</span>
+    <span class="hud-item hud-coins" id="hud-coins">🪙 0</span>
+    <span class="hud-item" id="hud-lives">❤️❤️❤️</span>
+  </div>
+  <div id="abilities-bar"></div>
+</div>
+<div id="screens">
+  <div class="screen active" id="screen-menu">
+    <h1>⚡ PIXEL RUNNER ⚡</h1>
+    <p class="level-info">Parkour 2D — 1040 Níveis</p>
+    <button class="btn" onclick="startGame()">▶ JOGAR</button>
+    <button class="btn" onclick="openShop()">🏪 LOJA DE HABILIDADES</button>
+    <div class="controls-info">
+      WASD / Setas: Mover<br>
+      Espaço / W / ↑: Pular<br>
+      Q: Dash | E: Slide<br>
+      R: Wall Run | F: Backflip<br>
+      Shift+Espaço: Super Pulo | I: Invisível
+    </div>
+  </div>
+
+  <div class="screen" id="screen-shop">
+    <h2>🏪 LOJA DE HABILIDADES</h2>
+    <div class="hud-item" id="shop-coins" style="font-size:15px">🪙 0</div>
+    <div id="shop-list" style="width:100%; display:flex; flex-direction:column; gap:8px;"></div>
+    <button class="btn" onclick="closeShop()">← VOLTAR</button>
+  </div>
+
+  <div class="screen" id="screen-pause">
+    <h2>⏸ PAUSADO</h2>
+    <button class="btn" onclick="resumeGame()">▶ CONTINUAR</button>
+    <button class="btn" onclick="openShop()">🏪 LOJA</button>
+    <button class="btn" onclick="goMenu()">🏠 MENU</button>
+  </div>
+
+  <div class="screen" id="screen-death">
+    <h2>💀 VOCÊ MORREU</h2>
+    <p class="death-msg" id="death-msg"></p>
+    <button class="btn" onclick="restartLevel()">🔄 TENTAR NOVAMENTE</button>
+    <button class="btn" onclick="openShop()">🏪 LOJA</button>
+    <button class="btn" onclick="goMenu()">🏠 MENU</button>
+  </div>
+
+  <div class="screen" id="screen-win">
+    <h2 id="win-title">🎉 FASE COMPLETA!</h2>
+    <p class="win-msg" id="win-msg"></p>
+    <button class="btn" onclick="nextLevel()">▶ PRÓXIMA FASE</button>
+    <button class="btn" onclick="goMenu()">🏠 MENU</button>
+  </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.152.2/examples/js/loaders/GLTFLoader.js"></script>
-
 <script>
-  const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x87ceeb);
-  const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
-  const renderer = new THREE.WebGLRenderer({antialias:true});
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  document.body.appendChild(renderer.domElement);
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
 
-  const light = new THREE.DirectionalLight(0xffffff, 1);
-  light.position.set(10, 20, 10);
-  scene.add(light);
+const G = {
+  coins: parseInt(localStorage.getItem('pk_coins') || '0'),
+  skills: JSON.parse(localStorage.getItem('pk_skills') || '{}'),
+  activeSkills: JSON.parse(localStorage.getItem('pk_active') || '{}'),
+  level: parseInt(localStorage.getItem('pk_level') || '1'),
+  highScore: parseInt(localStorage.getItem('pk_high') || '1'),
+};
 
-  // Chão
-  const floorTexture = new THREE.TextureLoader().load("https://polyhaven.com/a/concrete_floor_001/concrete_floor_001_diff_1k.jpg");
-  floorTexture.wrapS = floorTexture.wrapT = THREE.RepeatWrapping;
-  floorTexture.repeat.set(50, 50);
-  const floor = new THREE.Mesh(
-    new THREE.PlaneGeometry(200, 200),
-    new THREE.MeshStandardMaterial({ map: floorTexture })
-  );
-  floor.rotation.x = -Math.PI / 2;
-  scene.add(floor);
+const SKILLS = [
+  { id: 'backflip', name: 'Mortal de Costas', icon: '🤸', cost: 150, key: 'F', desc: 'Pressione F no ar — invencível durante o mortal!', color: '#FF6B6B' },
+  { id: 'doublejump', name: 'Double Jump', icon: '✨', cost: 100, key: 'Espaço (2x)', desc: 'Pule duas vezes no ar!', color: '#FFD700' },
+  { id: 'wallrun', name: 'Wall Run', icon: '🧱', cost: 200, key: 'R + parede', desc: 'Corra pelas paredes verticalmente!', color: '#4ECDC4' },
+  { id: 'dash', name: 'Dash', icon: '💨', cost: 80, key: 'Q', desc: 'Dê uma investida rápida horizontal!', color: '#A78BFA' },
+  { id: 'superjump', name: 'Super Pulo', icon: '🚀', cost: 120, key: 'Shift+Espaço', desc: 'Pulo 3x mais alto!', color: '#FB923C' },
+  { id: 'slide', name: 'Slide', icon: '🛷', cost: 60, key: 'E', desc: 'Deslize pelo chão passando por buracos baixos!', color: '#34D399' },
+  { id: 'invisible', name: 'Invisibilidade', icon: '👻', cost: 300, key: 'I', desc: 'Fique invisível por 3s — atravessa armadilhas!', color: '#818CF8' },
+];
 
-  // Player
-  let player;
-  const loader = new THREE.GLTFLoader();
-  loader.load("https://models.readyplayer.me/64b6f7b3b3d3a2f0c9f1.glb", function(gltf){
-    player = gltf.scene;
-    player.scale.set(1,1,1);
-    player.position.set(0,1,0);
-    scene.add(player);
+const TILE = 20;
+let player, camera, level_data, gameState, keys, cooldowns;
+
+function initPlayer() {
+  player = {
+    x: 2 * TILE, y: 3 * TILE,
+    vx: 0, vy: 0,
+    w: 12, h: 18,
+    onGround: false,
+    onWall: 0,
+    lives: 3,
+    jumps: 0,
+    maxJumps: G.skills.doublejump ? 2 : 1,
+    sliding: false,
+    invisible: false,
+    invincible: false,
+    backflipAngle: 0,
+    lastDir: 1,
+    dead: false,
+    coins: 0,
+    slideTimer: 0,
+    invisTimer: 0,
+    invincTimer: 0,
+    wallRunTimer: 0,
+  };
+  cooldowns = { dash: 0, backflip: 0, superjump: 0, invisible: 0 };
+  camera = { x: 0, y: 0 };
+}
+
+function generateLevel(lvl) {
+  const diff = Math.min((lvl - 1) / 40, 1);
+  let rng = lvl * 1337;
+  function rand(n) { rng = (rng * 1664525 + 1013904223) & 0xffffffff; return Math.abs(rng) % n; }
+  function randF(a, b) { return a + (rand(1000) / 1000) * (b - a); }
+
+  const W = 80 + Math.floor(diff * 60);
+  const H = 18;
+  const tiles = [];
+  for (let y = 0; y < H; y++) { tiles[y] = []; for (let x = 0; x < W; x++) tiles[y][x] = 0; }
+
+  for (let x = 0; x < W; x++) tiles[H-1][x] = 1;
+
+  const numPlat = 8 + Math.floor(diff * 20);
+  const platforms = [];
+  for (let i = 0; i < numPlat; i++) {
+    const px = 5 + rand(W - 14);
+    const py = 6 + rand(H - 8);
+    const pw = 3 + rand(6 + Math.floor(diff * 4));
+    for (let x = px; x < Math.min(px + pw, W - 1); x++) tiles[py][x] = 1;
+    platforms.push({ x: px, y: py, w: pw });
+  }
+
+  const numGaps = Math.floor(diff * 6) + (lvl <= 40 ? 0 : 2);
+  for (let g = 0; g < numGaps; g++) {
+    const gx = 8 + rand(W - 20);
+    const gw = 2 + rand(3);
+    for (let x = gx; x < gx + gw && x < W - 2; x++) tiles[H-1][x] = 0;
+  }
+
+  const numSpikes = Math.floor(diff * 12);
+  const spikes = [];
+  for (let s = 0; s < numSpikes; s++) {
+    const sx = 6 + rand(W - 10);
+    const sy = H - 2;
+    if (tiles[H-1][sx] === 1) spikes.push({ x: sx, y: sy });
+  }
+
+  const numMoving = Math.floor(diff * 5);
+  const movingPlats = [];
+  for (let m = 0; m < numMoving; m++) {
+    const mx = 10 + rand(W - 20);
+    const my = 5 + rand(8);
+    const mrange = 3 + rand(4);
+    movingPlats.push({ x: mx, y: my, ox: mx, range: mrange, speed: 0.3 + randF(0, 0.5), t: rand(100) / 100 });
+  }
+
+  const coins = [];
+  const numCoins = 5 + Math.floor(diff * 15);
+  for (let c = 0; c < numCoins; c++) {
+    const cx = 3 + rand(W - 4);
+    const cy = 4 + rand(H - 6);
+    if (tiles[cy][cx] === 0 && tiles[cy+1] && tiles[cy+1][cx] === 0) {
+      coins.push({ x: cx, y: cy, collected: false });
+    }
+  }
+  if (lvl > 40) coins.push({ x: W - 5, y: 3, collected: false, value: 5 });
+
+  for (let y = 0; y < H; y++) { tiles[y][0] = 1; tiles[y][W-1] = 1; }
+
+  const theme = lvl <= 40 ? 0 : lvl <= 200 ? 1 : lvl <= 500 ? 2 : 3;
+  return { tiles, W, H, spikes, movingPlats, coins, exitX: W - 4, exitY: H - 3, theme, lvl };
+}
+
+const THEMES = [
+  { sky: '#1a1a3a', ground: '#3a2a1a', plat: '#5a4a2a', platTop: '#7a6a3a' },
+  { sky: '#0a1a0a', ground: '#1a3a1a', plat: '#2a5a2a', platTop: '#3a7a3a' },
+  { sky: '#1a0a2a', ground: '#3a1a4a', plat: '#5a2a6a', platTop: '#7a3a8a' },
+  { sky: '#0a0a0a', ground: '#2a2a2a', plat: '#1a1a4a', platTop: '#3a3a6a' },
+];
+
+let LD = null, gameRunning = false, paused = false, animId = null;
+
+function startGame() {
+  hideAllScreens();
+  LD = generateLevel(G.level);
+  initPlayer();
+  gameRunning = true;
+  paused = false;
+  keys = {};
+  updateAbilitiesBar();
+  if (animId) cancelAnimationFrame(animId);
+  loop();
+}
+
+function restartLevel() { startGame(); }
+function nextLevel() {
+  G.level++;
+  if (G.level > G.highScore) G.highScore = G.level;
+  localStorage.setItem('pk_level', G.level);
+  localStorage.setItem('pk_high', G.highScore);
+  startGame();
+}
+function goMenu() { gameRunning = false; if (animId) cancelAnimationFrame(animId); showScreen('menu'); }
+function resumeGame() { paused = false; hideAllScreens(); loop(); }
+
+function openShop() { renderShop(); showScreen('shop'); }
+function closeShop() {
+  if (gameRunning && !paused) hideAllScreens();
+  else if (gameRunning) showScreen('pause');
+  else showScreen('menu');
+}
+
+function showScreen(name) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById('screen-' + name).classList.add('active');
+}
+function hideAllScreens() { document.querySelectorAll('.screen').forEach(s => s.classList.remove('active')); }
+
+function renderShop() {
+  document.getElementById('shop-coins').textContent = '🪙 ' + G.coins;
+  const list = document.getElementById('shop-list');
+  list.innerHTML = '<div class="section-title">HABILIDADES DISPONÍVEIS</div>';
+  SKILLS.forEach(sk => {
+    const owned = G.skills[sk.id];
+    const active = G.activeSkills[sk.id];
+    const div = document.createElement('div');
+    div.className = 'skill-item';
+    div.innerHTML = `
+      <div style="font-size:20px">${sk.icon}</div>
+      <div class="skill-info">
+        <div class="skill-name">${sk.name}</div>
+        <div class="skill-desc">${sk.desc}</div>
+        <div class="skill-desc" style="color:${sk.color}">Tecla: ${sk.key}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+        ${owned
+          ? `<span class="owned-badge">✓ COMPRADO</span>
+             <button class="btn btn-small" onclick="toggleSkill('${sk.id}')" style="border-color:${active?'#00FFFF':'#666'};color:${active?'#00FFFF':'#aaa'}">${active?'✓ ATIVO':'ATIVAR'}</button>`
+          : `<span class="skill-cost">🪙 ${sk.cost}</span>
+             <button class="btn btn-small" onclick="buySkill('${sk.id}')" ${G.coins < sk.cost ? 'disabled' : ''}>COMPRAR</button>`
+        }
+      </div>
+    `;
+    list.appendChild(div);
+  });
+}
+
+function buySkill(id) {
+  const sk = SKILLS.find(s => s.id === id);
+  if (!sk || G.skills[id] || G.coins < sk.cost) return;
+  G.coins -= sk.cost;
+  G.skills[id] = true;
+  G.activeSkills[id] = true;
+  saveData();
+  renderShop();
+}
+
+function toggleSkill(id) {
+  if (!G.skills[id]) return;
+  G.activeSkills[id] = !G.activeSkills[id];
+  saveData();
+  renderShop();
+}
+
+function saveData() {
+  localStorage.setItem('pk_coins', G.coins);
+  localStorage.setItem('pk_skills', JSON.stringify(G.skills));
+  localStorage.setItem('pk_active', JSON.stringify(G.activeSkills));
+}
+
+function updateHUD() {
+  document.getElementById('hud-level').textContent = 'Fase ' + G.level + (G.level > 40 ? ' (+)' : '');
+  document.getElementById('hud-coins').textContent = '🪙 ' + G.coins;
+  const hearts = !player ? '❤️❤️❤️' : player.lives >= 3 ? '❤️❤️❤️' : player.lives === 2 ? '❤️❤️🖤' : player.lives === 1 ? '❤️🖤🖤' : '💀';
+  document.getElementById('hud-lives').textContent = hearts;
+}
+
+function updateAbilitiesBar() {
+  const bar = document.getElementById('abilities-bar');
+  bar.innerHTML = '';
+  SKILLS.filter(sk => G.skills[sk.id] && G.activeSkills[sk.id]).forEach(sk => {
+    const slot = document.createElement('div');
+    slot.className = 'ability-slot ready';
+    slot.id = 'slot-' + sk.id;
+    slot.innerHTML = sk.icon + '<div class="cd-bar" id="cd-' + sk.id + '" style="width:0%"></div>';
+    bar.appendChild(slot);
+  });
+}
+
+window.addEventListener('keydown', e => {
+  if (!keys) keys = {};
+  keys[e.code] = true;
+  if (e.code === 'Escape' && gameRunning) {
+    if (paused) resumeGame();
+    else { paused = true; showScreen('pause'); }
+  }
+  if (e.code === 'Space') e.preventDefault();
+  if (gameRunning && !paused) handleAbilityKeys(e.code);
+});
+window.addEventListener('keyup', e => { if (keys) keys[e.code] = false; });
+
+function handleAbilityKeys(code) {
+  if (!player || player.dead) return;
+  if (code === 'KeyQ' && G.skills.dash && G.activeSkills.dash && cooldowns.dash <= 0) {
+    player.vx = player.lastDir * 12;
+    cooldowns.dash = 60;
+  }
+  if (code === 'KeyE' && G.skills.slide && G.activeSkills.slide && player.onGround) {
+    player.sliding = true;
+    player.slideTimer = 40;
+    player.vx = player.lastDir * 6;
+  }
+  if (code === 'KeyF' && G.skills.backflip && G.activeSkills.backflip && !player.onGround && cooldowns.backflip <= 0) {
+    player.backflipAngle = Math.PI * 2;
+    player.invincible = true;
+    player.invincTimer = 40;
+    player.vy = -8;
+    player.vx = -player.lastDir * 6;
+    cooldowns.backflip = 90;
+  }
+  if (code === 'KeyI' && G.skills.invisible && G.activeSkills.invisible && cooldowns.invisible <= 0) {
+    player.invisible = true;
+    player.invincible = true;
+    player.invisTimer = 180;
+    player.invincTimer = 180;
+    cooldowns.invisible = 300;
+  }
+  if (code === 'Space' || code === 'KeyW' || code === 'ArrowUp') {
+    const maxJ = G.skills.doublejump && G.activeSkills.doublejump ? 2 : 1;
+    if (player.jumps < maxJ) {
+      const h = (G.skills.superjump && G.activeSkills.superjump && (keys['ShiftLeft'] || keys['ShiftRight'])) ? -18 : -11;
+      player.vy = h;
+      player.jumps++;
+      player.onGround = false;
+    }
+    if (!player.onGround && player.onWall !== 0 && G.skills.wallrun && G.activeSkills.wallrun) {
+      player.vy = -11;
+      player.vx = -player.onWall * 8;
+      player.wallRunTimer = 20;
+    }
+  }
+}
+
+const GRAVITY = 0.55, FRICTION = 0.82, SPEED = 4.5;
+
+function update() {
+  if (!player || player.dead || !LD) return;
+
+  if (player.slideTimer > 0) player.slideTimer--; else player.sliding = false;
+  if (player.invisTimer > 0) player.invisTimer--; else player.invisible = false;
+  if (player.invincTimer > 0) player.invincTimer--; else player.invincible = false;
+  if (player.wallRunTimer > 0) player.wallRunTimer--;
+  for (const k in cooldowns) if (cooldowns[k] > 0) cooldowns[k]--;
+  updateCooldownUI();
+
+  const mx = (keys['ArrowLeft'] || keys['KeyA']) ? -1 : (keys['ArrowRight'] || keys['KeyD']) ? 1 : 0;
+  if (!player.sliding) {
+    player.vx += mx * 1.5;
+    player.vx *= FRICTION;
+    if (Math.abs(player.vx) > SPEED) player.vx = Math.sign(player.vx) * SPEED;
+    if (mx !== 0) player.lastDir = mx;
+  }
+
+  player.vy += GRAVITY;
+  if (player.vy > 16) player.vy = 16;
+
+  player.onWall = 0;
+  if (G.skills.wallrun && G.activeSkills.wallrun) {
+    const testX = player.vx > 0 ? player.x + player.w + 1 : player.x - 1;
+    const ty = Math.floor((player.y + player.h / 2) / TILE);
+    const tx = Math.floor(testX / TILE);
+    if (LD.tiles[ty] && LD.tiles[ty][tx] === 1 && !player.onGround && mx !== 0) {
+      player.onWall = player.vx > 0 ? 1 : -1;
+      if (player.vy > 1) player.vy *= 0.85;
+    }
+  }
+
+  LD.movingPlats.forEach(mp => {
+    mp.t += mp.speed / 60;
+    mp.x = mp.ox + Math.sin(mp.t * Math.PI) * mp.range;
   });
 
-  // HUD variáveis
-  let energy = 100;
-  let stamina = 100;
-  let score = 0;
+  player.x += player.vx;
+  player.y += player.vy;
+  player.onGround = false;
+  collideWithTiles();
+  collideWithMovingPlats();
+  if (player.onGround) player.jumps = 0;
 
-  function updateHUD() {
-    document.getElementById("energy-fill").style.width = energy + "%";
-    document.getElementById("stamina-fill").style.width = stamina + "%";
-    document.getElementById("score").textContent = score;
+  LD.coins.forEach(coin => {
+    if (coin.collected) return;
+    const cx = coin.x * TILE + TILE / 2, cy = coin.y * TILE + TILE / 2;
+    if (Math.abs(player.x + player.w / 2 - cx) < TILE && Math.abs(player.y + player.h / 2 - cy) < TILE) {
+      coin.collected = true;
+      const val = coin.value || 1;
+      player.coins += val;
+      G.coins += val;
+      saveData();
+    }
+  });
+
+  if (!player.invincible) {
+    LD.spikes.forEach(sp => {
+      const sx = sp.x * TILE + 4, sy = sp.y * TILE + 8;
+      if (player.x + player.w > sx && player.x < sx + 12 && player.y + player.h > sy && player.y < sy + 8) hitPlayer();
+    });
   }
 
-  // Movimento
-  const keys = {};
-  let velocity = new THREE.Vector3();
-  let speed = 0.2;
-  let runMultiplier = 2;
-  let jumpForce = 0.35;
-  let gravity = -0.02;
-  let onGround = true;
+  if (player.y > LD.H * TILE + 60) hitPlayer();
 
-  document.addEventListener('keydown', e => keys[e.code] = true);
-  document.addEventListener('keyup', e => keys[e.code] = false);
+  const ex = LD.exitX * TILE, ey = LD.exitY * TILE;
+  if (player.x + player.w > ex && player.x < ex + TILE && player.y + player.h > ey && player.y < ey + TILE * 2) winLevel();
 
-  function animate() {
-    requestAnimationFrame(animate);
-    if (!player) return;
+  const targetCX = player.x - canvas.width / 2;
+  const targetCY = player.y - canvas.height / 2;
+  camera.x += (targetCX - camera.x) * 0.12;
+  camera.y += (targetCY - camera.y) * 0.12;
+  camera.x = Math.max(0, Math.min(camera.x, LD.W * TILE - canvas.width));
+  camera.y = Math.max(0, Math.min(camera.y, LD.H * TILE - canvas.height));
 
-    let moveSpeed = keys['ShiftLeft'] ? speed * runMultiplier : speed;
+  updateHUD();
+}
 
-    if (keys['KeyW']) player.position.z -= moveSpeed;
-    if (keys['KeyS']) player.position.z += moveSpeed;
-    if (keys['KeyA']) player.position.x -= moveSpeed;
-    if (keys['KeyD']) player.position.x += moveSpeed;
+function collideWithTiles() {
+  const p = player, tiles = LD.tiles, margin = 2;
+  const bx1 = Math.floor((p.x + margin) / TILE);
+  const bx2 = Math.floor((p.x + p.w - margin) / TILE);
+  const by = Math.floor((p.y + p.h) / TILE);
+  if (p.vy >= 0 && tiles[by] && (tiles[by][bx1] === 1 || tiles[by][bx2] === 1)) { p.y = by * TILE - p.h; p.vy = 0; p.onGround = true; }
+  const ty = Math.floor(p.y / TILE);
+  if (p.vy < 0 && tiles[ty] && (tiles[ty][bx1] === 1 || tiles[ty][bx2] === 1)) { p.y = (ty + 1) * TILE; p.vy = 0; }
+  const rx = Math.floor((p.x + p.w) / TILE);
+  const ry1 = Math.floor((p.y + margin) / TILE);
+  const ry2 = Math.floor((p.y + p.h - margin) / TILE);
+  if (p.vx > 0 && tiles[ry1] && tiles[ry2] && (tiles[ry1][rx] === 1 || tiles[ry2][rx] === 1)) { p.x = rx * TILE - p.w; p.vx = 0; }
+  const lx = Math.floor(p.x / TILE);
+  if (p.vx < 0 && tiles[ry1] && tiles[ry2] && (tiles[ry1][lx] === 1 || tiles[ry2][lx] === 1)) { p.x = (lx + 1) * TILE; p.vx = 0; }
+}
 
-    // Stamina diminui ao correr
-    if (keys['ShiftLeft'] && stamina > 0) {
-      stamina -= 0.2;
-    } else if (stamina < 100) {
-      stamina += 0.1; // recupera lentamente
+function collideWithMovingPlats() {
+  LD.movingPlats.forEach(mp => {
+    const px = mp.x * TILE, py = mp.y * TILE, pw = 4 * TILE;
+    if (player.x + player.w > px && player.x < px + pw && player.y + player.h > py && player.y < py + TILE && player.vy >= 0) {
+      const prevBottom = player.y + player.h - player.vy;
+      if (prevBottom <= py + 4) { player.y = py - player.h; player.vy = 0; player.onGround = true; }
     }
+  });
+}
 
-    // Pulo
-    if (keys['Space'] && onGround) {
-      velocity.y = jumpForce;
-      onGround = false;
-      energy -= 2; // gastar energia ao pular
-      score += 10; // ganhar pontos ao realizar ação
-    }
+function hitPlayer() {
+  if (player.invincible) return;
+  player.lives--;
+  player.invincible = true;
+  player.invincTimer = 80;
+  if (player.lives <= 0) {
+    player.dead = true;
+    gameRunning = false;
+    document.getElementById('death-msg').textContent = 'Fase ' + G.level + ' — Coletados: 🪙 ' + player.coins;
+    showScreen('death');
+  } else {
+    player.x = 2 * TILE; player.y = 3 * TILE;
+    player.vx = 0; player.vy = 0;
+  }
+}
 
-    // Gravidade
-    if (!onGround) {
-      velocity.y += gravity;
-      player.position.y += velocity.y;
-      if (player.position.y <= 1) {
-        player.position.y = 1;
-        velocity.y = 0;
-        onGround = true;
+function winLevel() {
+  gameRunning = false;
+  const bonus = G.level > 40 ? 10 : 5;
+  G.coins += bonus;
+  saveData();
+  document.getElementById('win-title').textContent = G.level > 40 ? '⚡ FASE EXTRA COMPLETA!' : '🎉 FASE COMPLETA!';
+  document.getElementById('win-msg').textContent = 'Moedas coletadas: 🪙 ' + player.coins + ' (+' + bonus + ' bônus)';
+  showScreen('win');
+}
+
+function updateCooldownUI() {
+  const cdMax = { dash: 60, backflip: 90, invisible: 300 };
+  SKILLS.forEach(sk => {
+    const slot = document.getElementById('slot-' + sk.id);
+    const bar = document.getElementById('cd-' + sk.id);
+    if (!slot || !bar) return;
+    const cd = cooldowns[sk.id] || 0;
+    const max = cdMax[sk.id] || 1;
+    bar.style.width = cd > 0 ? Math.round((cd / max) * 100) + '%' : '0%';
+    slot.className = 'ability-slot ' + (cd > 0 ? 'cooldown' : 'ready');
+  });
+}
+
+function draw() {
+  if (!LD) return;
+  const th = THEMES[LD.theme];
+  ctx.fillStyle = th.sky;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  for (let i = 0; i < 40; i++) {
+    ctx.fillRect(((i * 137 + LD.lvl * 7) % canvas.width), ((i * 73 + LD.lvl * 3) % (canvas.height * 0.6)), 1, 1);
+  }
+  ctx.save();
+  ctx.translate(-Math.floor(camera.x), -Math.floor(camera.y));
+  const startX = Math.floor(camera.x / TILE), endX = Math.ceil((camera.x + canvas.width) / TILE) + 1;
+  const startY = Math.floor(camera.y / TILE), endY = Math.ceil((camera.y + canvas.height) / TILE) + 1;
+  for (let y = startY; y < Math.min(endY, LD.H); y++) {
+    for (let x = startX; x < Math.min(endX, LD.W); x++) {
+      if (LD.tiles[y] && LD.tiles[y][x] === 1) {
+        const wx = x * TILE, wy = y * TILE;
+        ctx.fillStyle = th.ground; ctx.fillRect(wx, wy, TILE, TILE);
+        ctx.fillStyle = th.platTop; ctx.fillRect(wx, wy, TILE, 3);
+        ctx.fillStyle = th.plat; ctx.fillRect(wx + 2, wy + 5, 4, 3); ctx.fillRect(wx + 10, wy + 7, 3, 2);
       }
     }
-
-    // Atualizar HUD
-    updateHUD();
-
-    // Câmera
-    camera.position.set(player.position.x, player.position.y + 5, player.position.z + 15);
-    camera.lookAt(player.position);
-
-    renderer.render(scene, camera);
   }
+  LD.movingPlats.forEach(mp => {
+    const wx = mp.x * TILE, wy = mp.y * TILE;
+    ctx.fillStyle = THEMES[LD.theme].ground; ctx.fillRect(wx, wy, 4 * TILE, TILE);
+    ctx.fillStyle = '#FFD700'; ctx.fillRect(wx, wy, 4 * TILE, 3);
+    ctx.fillStyle = '#333'; ctx.fillRect(wx + 4, wy + 5, 3, 3); ctx.fillRect(wx + 4 * TILE - 7, wy + 5, 3, 3);
+  });
+  ctx.fillStyle = '#FF4444';
+  LD.spikes.forEach(sp => {
+    const sx = sp.x * TILE, sy = sp.y * TILE;
+    ctx.beginPath(); ctx.moveTo(sx + 2, sy + 12); ctx.lineTo(sx + TILE / 2, sy + 2); ctx.lineTo(sx + TILE - 2, sy + 12); ctx.fill();
+  });
+  LD.coins.forEach(coin => {
+    if (coin.collected) return;
+    const cx = coin.x * TILE + TILE / 2, cy = coin.y * TILE + TILE / 2 + Math.sin(Date.now() / 300 + coin.x) * 2;
+    ctx.fillStyle = coin.value ? '#FF8800' : '#FFD700';
+    ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#FFF8'; ctx.beginPath(); ctx.arc(cx - 1.5, cy - 1.5, 2, 0, Math.PI * 2); ctx.fill();
+  });
+  const puls = 0.8 + Math.sin(Date.now() / 200) * 0.2;
+  ctx.fillStyle = `rgba(0,255,136,${puls})`;
+  ctx.fillRect(LD.exitX * TILE + 2, LD.exitY * TILE, TILE - 4, TILE * 2);
+  ctx.fillStyle = '#00FF88'; ctx.font = 'bold 10px Courier New'; ctx.textAlign = 'center';
+  ctx.fillText('EXIT', LD.exitX * TILE + TILE / 2, LD.exitY * TILE + 24);
+  if (player && !player.dead) {
+    const px = Math.floor(player.x), py = Math.floor(player.y);
+    const alpha = player.invisible ? 0.3 : player.invincible ? (Math.sin(Date.now() / 80) > 0 ? 0.7 : 1) : 1;
+    ctx.globalAlpha = alpha;
+    if (player.backflipAngle > 0) {
+      ctx.save();
+      ctx.translate(px + player.w / 2, py + player.h / 2);
+      ctx.rotate(player.backflipAngle);
+      player.backflipAngle = Math.max(0, player.backflipAngle - 0.28);
+      drawPlayer(0, -player.h / 2, player.w, player.h, player.sliding);
+      ctx.restore();
+    } else {
+      drawPlayer(px, py, player.w, player.h, player.sliding);
+    }
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+}
 
-  animate();
+function drawPlayer(px, py, pw, ph, sliding) {
+  const h = sliding ? Math.floor(ph * 0.55) : ph;
+  const yo = sliding ? ph - h : 0;
+  ctx.fillStyle = '#4488FF'; ctx.fillRect(px + 1, py + yo + 6, pw - 2, h - 6);
+  ctx.fillStyle = '#FFCC88'; ctx.fillRect(px + 2, py + yo, pw - 4, 8);
+  ctx.fillStyle = '#222'; ctx.fillRect(px + (player.lastDir > 0 ? pw - 5 : 3), py + yo + 2, 2, 2);
+  if (!sliding) {
+    ctx.fillStyle = '#225599';
+    const leg = player.onGround ? Math.floor(Date.now() / 100) % 2 : 0;
+    ctx.fillRect(px + 1, py + h - 4 + yo, 4, 4 + leg);
+    ctx.fillRect(px + pw - 5, py + h - 4 + yo, 4, 4 - leg);
+  }
+}
+
+function resize() {
+  canvas.width = Math.min(window.innerWidth, 900);
+  canvas.height = Math.min(window.innerHeight - 50, 520);
+}
+resize();
+window.addEventListener('resize', resize);
+
+let lastTime = 0;
+function loop(ts = 0) {
+  if (!gameRunning || paused) return;
+  const dt = ts - lastTime; lastTime = ts;
+  if (dt < 200) { update(); draw(); }
+  animId = requestAnimationFrame(loop);
+}
+
+updateHUD();
+showScreen('menu');
+
+// Mobile controls
+const mc = document.createElement('div');
+mc.style.cssText = 'position:fixed;bottom:0;left:0;right:0;display:flex;justify-content:space-between;padding:8px;z-index:50;';
+mc.innerHTML = `
+  <div style="display:flex;gap:6px">
+    <button ontouchstart="keys['ArrowLeft']=true" ontouchend="keys['ArrowLeft']=false" style="width:52px;height:52px;background:rgba(255,215,0,0.15);border:2px solid #FFD70088;color:#FFD700;font-size:22px;border-radius:4px;cursor:pointer">◀</button>
+    <button ontouchstart="keys['ArrowRight']=true" ontouchend="keys['ArrowRight']=false" style="width:52px;height:52px;background:rgba(255,215,0,0.15);border:2px solid #FFD70088;color:#FFD700;font-size:22px;border-radius:4px;cursor:pointer">▶</button>
+  </div>
+  <div style="display:flex;gap:6px;align-items:flex-end">
+    <button ontouchstart="handleAbilityKeys('KeyQ')" style="width:44px;height:44px;background:rgba(167,139,250,0.2);border:2px solid #A78BFA88;color:#A78BFA;font-size:18px;border-radius:4px;cursor:pointer">💨</button>
+    <button ontouchstart="handleAbilityKeys('KeyE')" style="width:44px;height:44px;background:rgba(52,211,153,0.2);border:2px solid #34D39988;color:#34D399;font-size:18px;border-radius:4px;cursor:pointer">🛷</button>
+    <button ontouchstart="handleAbilityKeys('Space')" style="width:60px;height:60px;background:rgba(255,215,0,0.2);border:2px solid #FFD70088;color:#FFD700;font-size:26px;border-radius:4px;cursor:pointer">↑</button>
+  </div>
+`;
+document.body.appendChild(mc);
 </script>
 </body>
 </html>
